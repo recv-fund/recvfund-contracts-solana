@@ -72,4 +72,11 @@ pub mod recvfund {
         instructions::pay(ctx, invoice_id, amount)
     }
 
+    pub fn sweep_token(ctx: Context<SweepToken>, customer_ref: [u8; 32]) -> Result<()> {
+        instructions::sweep_token(ctx, customer_ref)
+    }
+
+    pub fn sweep_sol(ctx: Context<SweepSol>, customer_ref: [u8; 32]) -> Result<()> {
+        instructions::sweep_sol(ctx, customer_ref)
+    }
 }
