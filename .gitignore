@@ -1,0 +1,15 @@
+# Build output
+target/
+.anchor/
+test-ledger/
+
+# JS dependencies
+node_modules/
+
+# Keypairs: the program keypair in target/deploy and any wallet files must never be committed
+*-keypair.json
+*.keypair.json
+id.json
+
+# Editor and OS files
+.DS_Store
