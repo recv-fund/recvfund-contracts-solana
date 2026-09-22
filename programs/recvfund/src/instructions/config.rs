@@ -51,7 +51,11 @@ pub struct AuthorityOnly<'info> {
     pub config: Account<'info, GlobalConfig>,
 }
 
-pub fn set_fees(ctx: Context<AuthorityOnly>, fee_bps_checkout: u16, fee_bps_sweep: u16) -> Result<()> {
+pub fn set_fees(
+    ctx: Context<AuthorityOnly>,
+    fee_bps_checkout: u16,
+    fee_bps_sweep: u16,
+) -> Result<()> {
     require!(fee_bps_checkout <= MAX_FEE_BPS, RecvFundError::FeeTooHigh);
     require!(fee_bps_sweep <= MAX_FEE_BPS, RecvFundError::FeeTooHigh);
     let config = &mut ctx.accounts.config;

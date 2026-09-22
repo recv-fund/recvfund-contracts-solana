@@ -32,7 +32,11 @@ pub mod recvfund {
         instructions::initialize_config(ctx, fee_collector, fee_bps_checkout, fee_bps_sweep)
     }
 
-    pub fn set_fees(ctx: Context<AuthorityOnly>, fee_bps_checkout: u16, fee_bps_sweep: u16) -> Result<()> {
+    pub fn set_fees(
+        ctx: Context<AuthorityOnly>,
+        fee_bps_checkout: u16,
+        fee_bps_sweep: u16,
+    ) -> Result<()> {
         instructions::set_fees(ctx, fee_bps_checkout, fee_bps_sweep)
     }
 
@@ -54,7 +58,10 @@ pub mod recvfund {
         instructions::register_merchant(ctx, merchant_id, settlement_wallet)
     }
 
-    pub fn set_settlement_wallet(ctx: Context<MerchantAdminOnly>, new_settlement_wallet: Pubkey) -> Result<()> {
+    pub fn set_settlement_wallet(
+        ctx: Context<MerchantAdminOnly>,
+        new_settlement_wallet: Pubkey,
+    ) -> Result<()> {
         instructions::set_settlement_wallet(ctx, new_settlement_wallet)
     }
 

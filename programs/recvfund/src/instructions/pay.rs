@@ -72,7 +72,10 @@ pub struct Pay<'info> {
 
 pub fn pay(ctx: Context<Pay>, invoice_id: [u8; 32], amount: u64) -> Result<()> {
     require!(amount > 0, RecvFundError::ZeroAmount);
-    require!(ctx.accounts.merchant.is_active, RecvFundError::MerchantInactive);
+    require!(
+        ctx.accounts.merchant.is_active,
+        RecvFundError::MerchantInactive
+    );
 
     let (net, fee) = split(amount, ctx.accounts.config.fee_bps_checkout)?;
 

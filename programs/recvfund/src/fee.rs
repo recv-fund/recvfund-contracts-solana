@@ -18,9 +18,7 @@ pub fn compute_fee(amount: u64, bps: u16) -> Result<u64> {
 /// Returns `(net, fee)` for `amount` at `bps`.
 pub fn split(amount: u64, bps: u16) -> Result<(u64, u64)> {
     let fee = compute_fee(amount, bps)?;
-    let net = amount
-        .checked_sub(fee)
-        .ok_or(RecvFundError::MathOverflow)?;
+    let net = amount.checked_sub(fee).ok_or(RecvFundError::MathOverflow)?;
     Ok((net, fee))
 }
 

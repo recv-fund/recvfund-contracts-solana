@@ -54,7 +54,10 @@ pub struct MerchantAdminOnly<'info> {
     pub merchant: Account<'info, Merchant>,
 }
 
-pub fn set_settlement_wallet(ctx: Context<MerchantAdminOnly>, new_settlement_wallet: Pubkey) -> Result<()> {
+pub fn set_settlement_wallet(
+    ctx: Context<MerchantAdminOnly>,
+    new_settlement_wallet: Pubkey,
+) -> Result<()> {
     require!(
         new_settlement_wallet != Pubkey::default(),
         RecvFundError::InvalidSettlementWallet
