@@ -8,6 +8,8 @@
 use anchor_lang::prelude::*;
 
 pub mod errors;
+pub mod events;
+pub mod fee;
 pub mod instructions;
 pub mod state;
 
@@ -62,6 +64,12 @@ pub mod recvfund {
 
     pub fn set_merchant_active(ctx: Context<MerchantAdminOnly>, is_active: bool) -> Result<()> {
         instructions::set_merchant_active(ctx, is_active)
+    }
+
+    // ----- fund movement -----
+
+    pub fn pay(ctx: Context<Pay>, invoice_id: [u8; 32], amount: u64) -> Result<()> {
+        instructions::pay(ctx, invoice_id, amount)
     }
 
 }
