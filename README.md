@@ -247,6 +247,20 @@ secure location; a fresh clone without it will generate a new ID on
 `anchor keys sync`, which must then be aligned with `declare_id!` and
 `Anchor.toml` before building.
 
+## Deployments
+
+| Cluster | Program | Upgrade authority | Config PDA | Fee authority | Fee collector | Fees (checkout / sweep) |
+|---|---|---|---|---|---|---|
+| devnet | `G9u3a8P6T5RFsgQhjVC5Yw7oAUqURst5MQJi1rFVkzAt` | `58tYVJZ3DadHLW7aA4gGAWNxS1dEkm6ifseFqZ4LyTcV` | `TnJcc8jek4ZzrzijxGgcwRU55fdXxBU3t3Ty91vrTKr` | `58tYVJZ3DadHLW7aA4gGAWNxS1dEkm6ifseFqZ4LyTcV` | `GStZmhS72eX1euYiwQY9MaxahBopDBLGwfTtXPge3DK` | 75 / 100 bps |
+| mainnet-beta | not deployed | | | | | |
+
+Deployed 2026-09-30 in slot 505871112 from commit `850c891`. The on-chain
+binary is 343104 bytes with SHA-256
+`baedd33872b60cfd7cefccfadcdb5e31bbfbe17d84142fcb8b6257bc4339ac1e`, the value
+pinned in the server's `provenance.json`. The upgrade authority is a
+vendor testnet key, so the devnet deployment is provisional (see below). No
+on-chain IDL account was created.
+
 ## Deploy to devnet
 
 ```sh
@@ -259,6 +273,18 @@ anchor idl init --provider.cluster devnet -f target/idl/recvfund.json G9u3a8P6T5
 
 Then call `initialize_config` once from the vendor authority key. The
 `[programs.devnet]` entry in `Anchor.toml` already carries the program ID.
+
+### Configure after deploying
+
+`scripts/init-config.cjs` creates the Config PDA once; the signing keypair
+becomes the fee authority. It reads `target/idl/recvfund.json`.
+
+```sh
+RPC_URL=<cluster rpc> AUTHORITY_KEYPAIR=<path> FEE_COLLECTOR=<address> \
+  FEE_BPS_CHECKOUT=75 FEE_BPS_SWEEP=100 node scripts/init-config.cjs
+```
+
+Run again without the fee variables to print the current config.
 
 ## Upgrade authority
 
