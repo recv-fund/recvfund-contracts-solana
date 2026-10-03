@@ -71,8 +71,9 @@ pub fn set_sweeper(ctx: Context<MerchantAdminOnly>, new_sweeper: Pubkey) -> Resu
     Ok(())
 }
 
-/// Inactive merchants reject new `pay` calls only. Sweeps stay enabled so
-/// that funds already sitting in deposit addresses are never trapped.
+/// A flag for the merchant's own server; the program does not read it.
+/// Sweeps stay enabled so that funds already sitting in deposit addresses
+/// are never trapped.
 pub fn set_merchant_active(ctx: Context<MerchantAdminOnly>, is_active: bool) -> Result<()> {
     ctx.accounts.merchant.is_active = is_active;
     Ok(())

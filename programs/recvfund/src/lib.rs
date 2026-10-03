@@ -1,9 +1,8 @@
 //! recv.fund settlement program.
 //!
-//! Funds move in exactly two ways: a payer's tokens go straight to the
-//! merchant's settlement wallet (minus the fee) in `pay`, or a customer's
-//! deposit is swept from a derived deposit address to the same settlement
-//! wallet (minus the fee). No instruction accepts an arbitrary destination.
+//! Funds move in one way only: a customer's deposit is swept from a derived
+//! deposit address to the merchant's settlement wallet, minus the fee. No
+//! instruction accepts an arbitrary destination.
 
 use anchor_lang::prelude::*;
 
@@ -74,10 +73,6 @@ pub mod recvfund {
     }
 
     // ----- fund movement -----
-
-    pub fn pay(ctx: Context<Pay>, invoice_id: [u8; 32], amount: u64) -> Result<()> {
-        instructions::pay(ctx, invoice_id, amount)
-    }
 
     pub fn sweep_token(ctx: Context<SweepToken>, customer_ref: [u8; 32]) -> Result<()> {
         instructions::sweep_token(ctx, customer_ref)

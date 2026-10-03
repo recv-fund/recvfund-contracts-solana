@@ -9,7 +9,6 @@ pub const BPS_DENOMINATOR: u128 = 10_000;
 
 pub const CONFIG_SEED: &[u8] = b"config";
 pub const MERCHANT_SEED: &[u8] = b"merchant";
-pub const INVOICE_SEED: &[u8] = b"invoice";
 pub const DEPOSIT_SEED: &[u8] = b"deposit";
 
 /// Vendor-controlled settings. The authority can only change the fee rates
@@ -39,20 +38,5 @@ pub struct Merchant {
     /// convenience, not a custody key.
     pub sweeper: Pubkey,
     pub is_active: bool,
-    pub bump: u8,
-}
-
-/// Receipt created when an invoice is paid. Its existence is what makes a
-/// second payment for the same invoice fail at account creation.
-#[account]
-#[derive(InitSpace)]
-pub struct Invoice {
-    pub merchant: Pubkey,
-    pub invoice_id: [u8; 32],
-    pub mint: Pubkey,
-    pub payer: Pubkey,
-    pub amount: u64,
-    pub fee: u64,
-    pub paid_at: i64,
     pub bump: u8,
 }
