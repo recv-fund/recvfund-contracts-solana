@@ -1,5 +1,5 @@
 import * as anchor from "@coral-xyz/anchor";
-import { Program, BN } from "@coral-xyz/anchor";
+import { Program } from "@coral-xyz/anchor";
 import {
   Keypair,
   LAMPORTS_PER_SOL,
@@ -10,7 +10,6 @@ import {
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
-  createAssociatedTokenAccount,
   createMint,
   getAccount,
   getAssociatedTokenAddressSync,
@@ -22,13 +21,27 @@ import { createHash } from "crypto";
 import { Recvfund } from "../target/types/recvfund";
 
 const MAX_FEE_BPS = 200;
-const FEE_BPS_CHECKOUT = 100; // 1%
-const FEE_BPS_SWEEP = 50; // 0.5%
+/** Terms in force when merchant 1 registers. */
+const FEE_BPS_A = 50; // 0.5%
+/** Terms set later; merchant 1 must keep FEE_BPS_A. */
+const FEE_BPS_B = 120; // 1.2%
 
 /** 32-byte identifier from a label; the server would use its own ids. */
 function id32(label: string): number[] {
   return Array.from(createHash("sha256").update(label).digest());
 }
+
+function expectedFee(amount: bigint, bps: number): bigint {
+  return (amount * BigInt(bps)) / 10_000n;
+}
+
+type TestMerchant = {
+  id: number[];
+  pda: PublicKey;
+  admin: Keypair;
+  sweeper: Keypair;
+  settlement: Keypair;
+};
 
 describe("recvfund", () => {
   const provider = anchor.AnchorProvider.env();
@@ -37,37 +50,42 @@ describe("recvfund", () => {
   const connection = provider.connection;
   const authority = (provider.wallet as anchor.Wallet).payer;
 
-  const feeCollector = Keypair.generate();
-  const merchantAdmin = Keypair.generate();
-  const sweeper = Keypair.generate();
-  const settlementWallet = Keypair.generate();
-  const payer = Keypair.generate();
+  const collectorA = Keypair.generate();
+  const collectorB = Keypair.generate();
   const outsider = Keypair.generate();
-
-  const merchantId = id32("merchant-1");
-  let mint: PublicKey;
-  let payerAta: PublicKey;
 
   const [configPda] = PublicKey.findProgramAddressSync(
     [Buffer.from("config")],
     program.programId
   );
-  const [merchantPda] = PublicKey.findProgramAddressSync(
-    [Buffer.from("merchant"), Buffer.from(merchantId)],
-    program.programId
-  );
-  const invoicePda = (invoiceId: number[]) =>
-    PublicKey.findProgramAddressSync(
-      [Buffer.from("invoice"), merchantPda.toBuffer(), Buffer.from(invoiceId)],
+
+  function newMerchant(label: string): TestMerchant {
+    const id = id32(label);
+    const [pda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("merchant"), Buffer.from(id)],
       program.programId
-    )[0];
-  const depositPda = (customerRef: number[]) =>
+    );
+    return {
+      id,
+      pda,
+      admin: Keypair.generate(),
+      sweeper: Keypair.generate(),
+      settlement: Keypair.generate(),
+    };
+  }
+
+  /** Registered under FEE_BPS_A / collectorA. */
+  const m1 = newMerchant("merchant-1");
+  /** Registered after the terms change to FEE_BPS_B / collectorB. */
+  const m2 = newMerchant("merchant-2");
+  /** Registered while the vendor rate is 0. */
+  const m3 = newMerchant("merchant-zero-fee");
+
+  let mint: PublicKey;
+
+  const depositPda = (m: TestMerchant, customerRef: number[]) =>
     PublicKey.findProgramAddressSync(
-      [
-        Buffer.from("deposit"),
-        merchantPda.toBuffer(),
-        Buffer.from(customerRef),
-      ],
+      [Buffer.from("deposit"), m.pda.toBuffer(), Buffer.from(customerRef)],
       program.programId
     )[0];
   const ata = (owner: PublicKey) =>
@@ -82,6 +100,10 @@ describe("recvfund", () => {
     const info = await connection.getAccountInfo(address);
     if (!info) return 0n;
     return (await getAccount(connection, address)).amount;
+  }
+
+  async function lamports(address: PublicKey): Promise<bigint> {
+    return BigInt(await connection.getBalance(address));
   }
 
   /** Asserts that `p` rejects with the named Anchor error, or a raw message. */
@@ -115,59 +137,136 @@ describe("recvfund", () => {
     );
   }
 
-  const payAccounts = (invoiceId: number[], from: Keypair = payer) => ({
-    payer: from.publicKey,
+  const authorityOnly = (signer: PublicKey = authority.publicKey) => ({
+    authority: signer,
     config: configPda,
-    merchant: merchantPda,
-    invoice: invoicePda(invoiceId),
+  });
+
+  const registerAccounts = (m: TestMerchant, admin = m.admin.publicKey) => ({
+    admin,
+    config: configPda,
+    merchant: m.pda,
+    systemProgram: SystemProgram.programId,
+  });
+
+  function register(m: TestMerchant) {
+    return program.methods
+      .registerMerchant(m.id, m.settlement.publicKey, m.sweeper.publicKey)
+      .accountsStrict(registerAccounts(m))
+      .signers([m.admin])
+      .rpc();
+  }
+
+  const sweepTokenAccounts = (
+    m: TestMerchant,
+    customerRef: number[],
+    signer: PublicKey,
+    feeCollector: PublicKey
+  ) => ({
+    signer,
+    merchant: m.pda,
+    depositAuthority: depositPda(m, customerRef),
     mint,
-    payerTokenAccount: ata(from.publicKey),
-    settlementWallet: settlementWallet.publicKey,
-    settlementTokenAccount: ata(settlementWallet.publicKey),
-    feeCollector: feeCollector.publicKey,
-    feeCollectorTokenAccount: ata(feeCollector.publicKey),
+    depositTokenAccount: ata(depositPda(m, customerRef)),
+    settlementWallet: m.settlement.publicKey,
+    settlementTokenAccount: ata(m.settlement.publicKey),
+    feeCollector,
+    feeCollectorTokenAccount: ata(feeCollector),
     tokenProgram: TOKEN_PROGRAM_ID,
     associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
     systemProgram: SystemProgram.programId,
   });
 
-  const sweepTokenAccounts = (customerRef: number[], signer: PublicKey) => ({
+  const sweepSolAccounts = (
+    m: TestMerchant,
+    customerRef: number[],
+    signer: PublicKey,
+    feeCollector: PublicKey
+  ) => ({
     signer,
-    config: configPda,
-    merchant: merchantPda,
-    depositAuthority: depositPda(customerRef),
-    mint,
-    depositTokenAccount: ata(depositPda(customerRef)),
-    settlementWallet: settlementWallet.publicKey,
-    settlementTokenAccount: ata(settlementWallet.publicKey),
-    feeCollector: feeCollector.publicKey,
-    feeCollectorTokenAccount: ata(feeCollector.publicKey),
-    tokenProgram: TOKEN_PROGRAM_ID,
-    associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+    merchant: m.pda,
+    depositAuthority: depositPda(m, customerRef),
+    settlementWallet: m.settlement.publicKey,
+    feeCollector,
     systemProgram: SystemProgram.programId,
   });
 
-  const sweepSolAccounts = (customerRef: number[], signer: PublicKey) => ({
-    signer,
-    config: configPda,
-    merchant: merchantPda,
-    depositAuthority: depositPda(customerRef),
-    settlementWallet: settlementWallet.publicKey,
-    feeCollector: feeCollector.publicKey,
-    systemProgram: SystemProgram.programId,
-  });
+  function sweepToken(
+    m: TestMerchant,
+    customerRef: number[],
+    feeCollector: PublicKey,
+    signer: Keypair = m.sweeper
+  ) {
+    return program.methods
+      .sweepToken(customerRef)
+      .accountsStrict(
+        sweepTokenAccounts(m, customerRef, signer.publicKey, feeCollector)
+      )
+      .signers([signer])
+      .rpc();
+  }
+
+  function sweepSol(
+    m: TestMerchant,
+    customerRef: number[],
+    feeCollector: PublicKey,
+    signer: Keypair = m.sweeper
+  ) {
+    return program.methods
+      .sweepSol(customerRef)
+      .accountsStrict(
+        sweepSolAccounts(m, customerRef, signer.publicKey, feeCollector)
+      )
+      .signers([signer])
+      .rpc();
+  }
+
+  /**
+   * A customer token deposit. The deposit PDA is off-curve, so its ATA is
+   * created with allowOwnerOffCurve; an existing ATA is reused.
+   */
+  async function depositTokens(
+    m: TestMerchant,
+    customerRef: number[],
+    amount: bigint
+  ): Promise<PublicKey> {
+    const account = await getOrCreateAssociatedTokenAccount(
+      connection,
+      authority,
+      mint,
+      depositPda(m, customerRef),
+      true
+    );
+    await mintTo(
+      connection,
+      authority,
+      mint,
+      account.address,
+      authority,
+      amount
+    );
+    return account.address;
+  }
+
+  async function depositSol(
+    m: TestMerchant,
+    customerRef: number[],
+    amount: bigint
+  ) {
+    const tx = new Transaction().add(
+      SystemProgram.transfer({
+        fromPubkey: authority.publicKey,
+        toPubkey: depositPda(m, customerRef),
+        lamports: amount,
+      })
+    );
+    await provider.sendAndConfirm(tx, [authority]);
+  }
 
   before(async () => {
-    await Promise.all(
-      [
-        feeCollector,
-        merchantAdmin,
-        sweeper,
-        settlementWallet,
-        payer,
-        outsider,
-      ].map((k) => airdrop(k.publicKey))
-    );
+    const keys = [collectorA, collectorB, outsider];
+    for (const m of [m1, m2, m3]) keys.push(m.admin, m.sweeper, m.settlement);
+    await Promise.all(keys.map((k) => airdrop(k.publicKey)));
     mint = await createMint(
       connection,
       authority,
@@ -175,16 +274,7 @@ describe("recvfund", () => {
       null,
       6
     );
-    payerAta = (
-      await getOrCreateAssociatedTokenAccount(
-        connection,
-        payer,
-        mint,
-        payer.publicKey
-      )
-    ).address;
-    await mintTo(connection, authority, mint, payerAta, authority, 100_000_000);
-    // An existing token account owned by someone else, used to try to redirect settlements.
+    // An existing token account owned by someone else, used to try to redirect funds.
     await getOrCreateAssociatedTokenAccount(
       connection,
       outsider,
@@ -197,14 +287,9 @@ describe("recvfund", () => {
     it("rejects initialization with a fee above the cap", async () => {
       await expectFailure(
         program.methods
-          .initializeConfig(
-            feeCollector.publicKey,
-            MAX_FEE_BPS + 1,
-            FEE_BPS_SWEEP
-          )
+          .initializeConfig(collectorA.publicKey, MAX_FEE_BPS + 1)
           .accountsStrict({
-            authority: authority.publicKey,
-            config: configPda,
+            ...authorityOnly(),
             systemProgram: SystemProgram.programId,
           })
           .rpc(),
@@ -212,75 +297,92 @@ describe("recvfund", () => {
       );
     });
 
-    it("initializes with the signer as authority", async () => {
-      await program.methods
-        .initializeConfig(
-          feeCollector.publicKey,
-          FEE_BPS_CHECKOUT,
-          FEE_BPS_SWEEP
-        )
+    it("rejects initialization with the default pubkey as fee collector", async () => {
+      await expectFailure(
+        program.methods
+          .initializeConfig(PublicKey.default, FEE_BPS_A)
+          .accountsStrict({
+            ...authorityOnly(),
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc(),
+        "InvalidFeeCollector"
+      );
+    });
+
+    it("initializes with the signer as authority and emits FeeTermsUpdated", async () => {
+      const sig = await program.methods
+        .initializeConfig(collectorA.publicKey, FEE_BPS_A)
         .accountsStrict({
-          authority: authority.publicKey,
-          config: configPda,
+          ...authorityOnly(),
           systemProgram: SystemProgram.programId,
         })
         .rpc();
       const cfg = await program.account.globalConfig.fetch(configPda);
       expect(cfg.authority.equals(authority.publicKey)).to.be.true;
-      expect(cfg.feeCollector.equals(feeCollector.publicKey)).to.be.true;
-      expect(cfg.feeBpsCheckout).to.equal(FEE_BPS_CHECKOUT);
-      expect(cfg.feeBpsSweep).to.equal(FEE_BPS_SWEEP);
+      expect(cfg.feeCollector.equals(collectorA.publicKey)).to.be.true;
+      expect(cfg.feeBps).to.equal(FEE_BPS_A);
+
+      const [ev] = await eventsOf(sig, "feeTermsUpdated");
+      expect(ev, "FeeTermsUpdated event").to.not.be.undefined;
+      expect(ev.data.feeCollector.equals(collectorA.publicKey)).to.be.true;
+      expect(ev.data.feeBps).to.equal(FEE_BPS_A);
     });
 
-    it("rejects set_fees above the cap and accepts the cap itself", async () => {
-      const authorityOnly = {
-        authority: authority.publicKey,
-        config: configPda,
-      };
+    it("rejects a second initialization", async () => {
       await expectFailure(
         program.methods
-          .setFees(MAX_FEE_BPS, MAX_FEE_BPS + 1)
-          .accountsStrict(authorityOnly)
+          .initializeConfig(outsider.publicKey, 0)
+          .accountsStrict({
+            ...authorityOnly(),
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc(),
+        "already in use"
+      );
+    });
+
+    it("validates set_fee_terms: cap, default collector, and the cap itself is accepted", async () => {
+      await expectFailure(
+        program.methods
+          .setFeeTerms(collectorA.publicKey, MAX_FEE_BPS + 1)
+          .accountsStrict(authorityOnly())
           .rpc(),
         "FeeTooHigh"
       );
       await expectFailure(
         program.methods
-          .setFees(MAX_FEE_BPS + 1, 0)
-          .accountsStrict(authorityOnly)
+          .setFeeTerms(PublicKey.default, FEE_BPS_A)
+          .accountsStrict(authorityOnly())
           .rpc(),
-        "FeeTooHigh"
+        "InvalidFeeCollector"
       );
-      await program.methods
-        .setFees(MAX_FEE_BPS, MAX_FEE_BPS)
-        .accountsStrict(authorityOnly)
+      const sig = await program.methods
+        .setFeeTerms(collectorB.publicKey, MAX_FEE_BPS)
+        .accountsStrict(authorityOnly())
         .rpc();
       let cfg = await program.account.globalConfig.fetch(configPda);
-      expect(cfg.feeBpsCheckout).to.equal(MAX_FEE_BPS);
-      expect(cfg.feeBpsSweep).to.equal(MAX_FEE_BPS);
-      // Restore the rates the rest of the suite assumes.
+      expect(cfg.feeBps).to.equal(MAX_FEE_BPS);
+      expect(cfg.feeCollector.equals(collectorB.publicKey)).to.be.true;
+      const [ev] = await eventsOf(sig, "feeTermsUpdated");
+      expect(ev.data.feeCollector.equals(collectorB.publicKey)).to.be.true;
+      expect(ev.data.feeBps).to.equal(MAX_FEE_BPS);
+
+      // Restore the terms merchant 1 registers under.
       await program.methods
-        .setFees(FEE_BPS_CHECKOUT, FEE_BPS_SWEEP)
-        .accountsStrict(authorityOnly)
+        .setFeeTerms(collectorA.publicKey, FEE_BPS_A)
+        .accountsStrict(authorityOnly())
         .rpc();
       cfg = await program.account.globalConfig.fetch(configPda);
-      expect(cfg.feeBpsCheckout).to.equal(FEE_BPS_CHECKOUT);
+      expect(cfg.feeBps).to.equal(FEE_BPS_A);
+      expect(cfg.feeCollector.equals(collectorA.publicKey)).to.be.true;
     });
 
-    it("rejects authority-only setters from any other signer", async () => {
-      const asOutsider = { authority: outsider.publicKey, config: configPda };
+    it("rejects authority-only instructions from any other signer", async () => {
       await expectFailure(
         program.methods
-          .setFees(0, 0)
-          .accountsStrict(asOutsider)
-          .signers([outsider])
-          .rpc(),
-        "Unauthorized"
-      );
-      await expectFailure(
-        program.methods
-          .setFeeCollector(outsider.publicKey)
-          .accountsStrict(asOutsider)
+          .setFeeTerms(outsider.publicKey, 0)
+          .accountsStrict(authorityOnly(outsider.publicKey))
           .signers([outsider])
           .rpc(),
         "Unauthorized"
@@ -288,11 +390,14 @@ describe("recvfund", () => {
       await expectFailure(
         program.methods
           .transferAuthority(outsider.publicKey)
-          .accountsStrict(asOutsider)
+          .accountsStrict(authorityOnly(outsider.publicKey))
           .signers([outsider])
           .rpc(),
         "Unauthorized"
       );
+      const cfg = await program.account.globalConfig.fetch(configPda);
+      expect(cfg.authority.equals(authority.publicKey)).to.be.true;
+      expect(cfg.feeCollector.equals(collectorA.publicKey)).to.be.true;
     });
 
     it("transfers authority and the old key loses access", async () => {
@@ -300,86 +405,84 @@ describe("recvfund", () => {
       await airdrop(newAuthority.publicKey, 1);
       await program.methods
         .transferAuthority(newAuthority.publicKey)
-        .accountsStrict({ authority: authority.publicKey, config: configPda })
+        .accountsStrict(authorityOnly())
         .rpc();
       await expectFailure(
         program.methods
-          .setFees(0, 0)
-          .accountsStrict({ authority: authority.publicKey, config: configPda })
+          .setFeeTerms(collectorA.publicKey, 0)
+          .accountsStrict(authorityOnly())
           .rpc(),
         "Unauthorized"
       );
       await program.methods
         .transferAuthority(authority.publicKey)
-        .accountsStrict({
-          authority: newAuthority.publicKey,
-          config: configPda,
-        })
+        .accountsStrict(authorityOnly(newAuthority.publicKey))
         .signers([newAuthority])
         .rpc();
       const cfg = await program.account.globalConfig.fetch(configPda);
       expect(cfg.authority.equals(authority.publicKey)).to.be.true;
     });
-
-    it("lets the authority change the fee collector", async () => {
-      const tmp = Keypair.generate().publicKey;
-      const authorityOnly = {
-        authority: authority.publicKey,
-        config: configPda,
-      };
-      await program.methods
-        .setFeeCollector(tmp)
-        .accountsStrict(authorityOnly)
-        .rpc();
-      expect(
-        (
-          await program.account.globalConfig.fetch(configPda)
-        ).feeCollector.equals(tmp)
-      ).to.be.true;
-      await program.methods
-        .setFeeCollector(feeCollector.publicKey)
-        .accountsStrict(authorityOnly)
-        .rpc();
-    });
   });
 
-  describe("merchant", () => {
-    it("registers with the signer as admin and sweeper", async () => {
-      await program.methods
-        .registerMerchant(merchantId, settlementWallet.publicKey)
-        .accountsStrict({
-          admin: merchantAdmin.publicKey,
-          merchant: merchantPda,
-          systemProgram: SystemProgram.programId,
-        })
-        .signers([merchantAdmin])
-        .rpc();
-      const m = await program.account.merchant.fetch(merchantPda);
-      expect(m.merchantId).to.deep.equal(merchantId);
-      expect(m.admin.equals(merchantAdmin.publicKey)).to.be.true;
-      expect(m.sweeper.equals(merchantAdmin.publicKey)).to.be.true;
-      expect(m.settlementWallet.equals(settlementWallet.publicKey)).to.be.true;
+  describe("register_merchant", () => {
+    it("rejects the default pubkey as settlement wallet or sweeper", async () => {
+      await expectFailure(
+        program.methods
+          .registerMerchant(m1.id, PublicKey.default, m1.sweeper.publicKey)
+          .accountsStrict(registerAccounts(m1))
+          .signers([m1.admin])
+          .rpc(),
+        "InvalidSettlementWallet"
+      );
+      await expectFailure(
+        program.methods
+          .registerMerchant(m1.id, m1.settlement.publicKey, PublicKey.default)
+          .accountsStrict(registerAccounts(m1))
+          .signers([m1.admin])
+          .rpc(),
+        "InvalidSweeper"
+      );
+      expect(await connection.getAccountInfo(m1.pda)).to.be.null;
+    });
+
+    it("registers in one instruction with sweeper and a snapshot of the fee terms", async () => {
+      const sig = await register(m1);
+      const m = await program.account.merchant.fetch(m1.pda);
+      expect(m.merchantId).to.deep.equal(m1.id);
+      expect(m.admin.equals(m1.admin.publicKey)).to.be.true;
+      expect(m.sweeper.equals(m1.sweeper.publicKey)).to.be.true;
+      expect(m.settlementWallet.equals(m1.settlement.publicKey)).to.be.true;
       expect(m.isActive).to.be.true;
+      expect(m.feeCollector.equals(collectorA.publicKey)).to.be.true;
+      expect(m.feeBps).to.equal(FEE_BPS_A);
+
+      const [ev] = await eventsOf(sig, "merchantRegistered");
+      expect(ev, "MerchantRegistered event").to.not.be.undefined;
+      expect(ev.data.merchantId).to.deep.equal(m1.id);
+      expect(ev.data.admin.equals(m1.admin.publicKey)).to.be.true;
+      expect(ev.data.settlementWallet.equals(m1.settlement.publicKey)).to.be
+        .true;
+      expect(ev.data.sweeper.equals(m1.sweeper.publicKey)).to.be.true;
+      expect(ev.data.feeCollector.equals(collectorA.publicKey)).to.be.true;
+      expect(ev.data.feeBps).to.equal(FEE_BPS_A);
     });
 
     it("rejects a second registration under the same id", async () => {
       await expectFailure(
         program.methods
-          .registerMerchant(merchantId, outsider.publicKey)
-          .accountsStrict({
-            admin: outsider.publicKey,
-            merchant: merchantPda,
-            systemProgram: SystemProgram.programId,
-          })
+          .registerMerchant(m1.id, outsider.publicKey, outsider.publicKey)
+          .accountsStrict(registerAccounts(m1, outsider.publicKey))
           .signers([outsider])
           .rpc(),
         "already in use"
       );
     });
+  });
 
-    it("rejects admin-only setters from the vendor authority and from strangers", async () => {
+  describe("merchant admin setters", () => {
+    it("reject the vendor authority and strangers", async () => {
       for (const who of [outsider, authority]) {
-        const asWho = { admin: who.publicKey, merchant: merchantPda };
+        const asWho = { admin: who.publicKey, merchant: m1.pda };
         await expectFailure(
           program.methods
             .setSettlementWallet(who.publicKey)
@@ -405,440 +508,590 @@ describe("recvfund", () => {
           "Unauthorized"
         );
       }
-      const m = await program.account.merchant.fetch(merchantPda);
-      expect(m.settlementWallet.equals(settlementWallet.publicKey)).to.be.true;
+      const m = await program.account.merchant.fetch(m1.pda);
+      expect(m.settlementWallet.equals(m1.settlement.publicKey)).to.be.true;
+      expect(m.sweeper.equals(m1.sweeper.publicKey)).to.be.true;
+      expect(m.isActive).to.be.true;
     });
 
-    it("lets the admin change the settlement wallet", async () => {
-      const asAdmin = { admin: merchantAdmin.publicKey, merchant: merchantPda };
+    it("let the admin change the settlement wallet, sweeper and active flag", async () => {
+      const asAdmin = { admin: m1.admin.publicKey, merchant: m1.pda };
       const tmp = Keypair.generate().publicKey;
+
       await program.methods
         .setSettlementWallet(tmp)
         .accountsStrict(asAdmin)
-        .signers([merchantAdmin])
+        .signers([m1.admin])
         .rpc();
       expect(
-        (
-          await program.account.merchant.fetch(merchantPda)
-        ).settlementWallet.equals(tmp)
+        (await program.account.merchant.fetch(m1.pda)).settlementWallet.equals(
+          tmp
+        )
       ).to.be.true;
       await expectFailure(
         program.methods
           .setSettlementWallet(PublicKey.default)
           .accountsStrict(asAdmin)
-          .signers([merchantAdmin])
+          .signers([m1.admin])
           .rpc(),
         "InvalidSettlementWallet"
       );
+
       await program.methods
-        .setSettlementWallet(settlementWallet.publicKey)
+        .setSweeper(tmp)
         .accountsStrict(asAdmin)
-        .signers([merchantAdmin])
+        .signers([m1.admin])
         .rpc();
-    });
+      expect((await program.account.merchant.fetch(m1.pda)).sweeper.equals(tmp))
+        .to.be.true;
 
-    it("lets the admin delegate sweeping", async () => {
-      await program.methods
-        .setSweeper(sweeper.publicKey)
-        .accountsStrict({
-          admin: merchantAdmin.publicKey,
-          merchant: merchantPda,
-        })
-        .signers([merchantAdmin])
-        .rpc();
-      expect(
-        (await program.account.merchant.fetch(merchantPda)).sweeper.equals(
-          sweeper.publicKey
-        )
-      ).to.be.true;
-    });
-  });
-
-  describe("pay", () => {
-    const invoiceId = id32("invoice-1");
-    const amount = 1_000_000n;
-    const expectedFee = (amount * BigInt(FEE_BPS_CHECKOUT)) / 10_000n;
-
-    it("splits the amount exactly, writes a receipt and emits PaymentReceived", async () => {
-      const before = {
-        payer: await tokenBalance(payerAta),
-        settlement: await tokenBalance(ata(settlementWallet.publicKey)),
-        collector: await tokenBalance(ata(feeCollector.publicKey)),
-      };
-
-      const sig = await program.methods
-        .pay(invoiceId, new BN(amount.toString()))
-        .accountsStrict(payAccounts(invoiceId))
-        .signers([payer])
-        .rpc();
-
-      expect(await tokenBalance(payerAta)).to.equal(before.payer - amount);
-      expect(await tokenBalance(ata(settlementWallet.publicKey))).to.equal(
-        before.settlement + amount - expectedFee
-      );
-      expect(await tokenBalance(ata(feeCollector.publicKey))).to.equal(
-        before.collector + expectedFee
-      );
-      expect(expectedFee).to.equal(10_000n);
-
-      const inv = await program.account.invoice.fetch(invoicePda(invoiceId));
-      expect(inv.merchant.equals(merchantPda)).to.be.true;
-      expect(inv.invoiceId).to.deep.equal(invoiceId);
-      expect(inv.mint.equals(mint)).to.be.true;
-      expect(inv.payer.equals(payer.publicKey)).to.be.true;
-      expect(inv.amount.toString()).to.equal(amount.toString());
-      expect(inv.fee.toString()).to.equal(expectedFee.toString());
-      expect(inv.paidAt.toNumber()).to.be.greaterThan(0);
-
-      const [ev] = await eventsOf(sig, "paymentReceived");
-      expect(ev, "PaymentReceived event").to.not.be.undefined;
-      expect(ev.data.merchantId).to.deep.equal(merchantId);
-      expect(ev.data.invoiceId).to.deep.equal(invoiceId);
-      expect(ev.data.mint.equals(mint)).to.be.true;
-      expect(ev.data.amount.toString()).to.equal(amount.toString());
-      expect(ev.data.fee.toString()).to.equal(expectedFee.toString());
-      expect(ev.data.payer.equals(payer.publicKey)).to.be.true;
-    });
-
-    it("rejects paying the same invoice twice", async () => {
-      await expectFailure(
-        program.methods
-          .pay(invoiceId, new BN(1))
-          .accountsStrict(payAccounts(invoiceId))
-          .signers([payer])
-          .rpc(),
-        "already in use"
-      );
-    });
-
-    it("rejects a zero amount", async () => {
-      const other = id32("invoice-zero");
-      await expectFailure(
-        program.methods
-          .pay(other, new BN(0))
-          .accountsStrict(payAccounts(other))
-          .signers([payer])
-          .rpc(),
-        "ZeroAmount"
-      );
-    });
-
-    it("rejects payments to an inactive merchant", async () => {
-      const asAdmin = { admin: merchantAdmin.publicKey, merchant: merchantPda };
       await program.methods
         .setMerchantActive(false)
         .accountsStrict(asAdmin)
-        .signers([merchantAdmin])
+        .signers([m1.admin])
         .rpc();
-      const other = id32("invoice-inactive");
-      await expectFailure(
-        program.methods
-          .pay(other, new BN(1000))
-          .accountsStrict(payAccounts(other))
-          .signers([payer])
-          .rpc(),
-        "MerchantInactive"
-      );
+      expect((await program.account.merchant.fetch(m1.pda)).isActive).to.be
+        .false;
+
+      // Restore, and confirm the fee terms were not touched by any setter.
+      await program.methods
+        .setSettlementWallet(m1.settlement.publicKey)
+        .accountsStrict(asAdmin)
+        .signers([m1.admin])
+        .rpc();
+      await program.methods
+        .setSweeper(m1.sweeper.publicKey)
+        .accountsStrict(asAdmin)
+        .signers([m1.admin])
+        .rpc();
       await program.methods
         .setMerchantActive(true)
         .accountsStrict(asAdmin)
-        .signers([merchantAdmin])
+        .signers([m1.admin])
         .rpc();
-    });
-
-    it("rejects a settlement token account that is not the registered wallet's ATA", async () => {
-      const other = id32("invoice-wrong-dest");
-      const accounts = payAccounts(other);
-      accounts.settlementTokenAccount = ata(outsider.publicKey);
-      await expectFailure(
-        program.methods
-          .pay(other, new BN(1000))
-          .accountsStrict(accounts)
-          .signers([payer])
-          .rpc(),
-        "ConstraintTokenOwner"
-      );
-      accounts.settlementTokenAccount = ata(settlementWallet.publicKey);
-      accounts.feeCollectorTokenAccount = ata(outsider.publicKey);
-      await expectFailure(
-        program.methods
-          .pay(other, new BN(1000))
-          .accountsStrict(accounts)
-          .signers([payer])
-          .rpc(),
-        "ConstraintTokenOwner"
-      );
+      const m = await program.account.merchant.fetch(m1.pda);
+      expect(m.settlementWallet.equals(m1.settlement.publicKey)).to.be.true;
+      expect(m.sweeper.equals(m1.sweeper.publicKey)).to.be.true;
+      expect(m.isActive).to.be.true;
+      expect(m.feeCollector.equals(collectorA.publicKey)).to.be.true;
+      expect(m.feeBps).to.equal(FEE_BPS_A);
     });
   });
 
   describe("sweep_token", () => {
     const customerRef = id32("customer-1");
     const deposited = 500_000n;
-    const expectedFee = (deposited * BigInt(FEE_BPS_SWEEP)) / 10_000n;
 
     before(async () => {
-      // The deposit PDA is off-curve, so its ATA has to be created explicitly.
-      const depositAta = await createAssociatedTokenAccount(
-        connection,
-        authority,
-        mint,
-        depositPda(customerRef),
-        undefined,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID,
-        true
-      );
-      await mintTo(
-        connection,
-        authority,
-        mint,
-        depositAta,
-        authority,
-        Number(deposited)
-      );
+      await depositTokens(m1, customerRef, deposited);
     });
 
-    it("rejects a sweep from a stranger", async () => {
+    it("rejects a sweep from a stranger or from the vendor authority", async () => {
       await expectFailure(
-        program.methods
-          .sweepToken(customerRef)
-          .accountsStrict(sweepTokenAccounts(customerRef, outsider.publicKey))
-          .signers([outsider])
-          .rpc(),
+        sweepToken(m1, customerRef, collectorA.publicKey, outsider),
         "Unauthorized"
       );
-    });
-
-    it("rejects a sweep from the vendor authority", async () => {
       await expectFailure(
-        program.methods
-          .sweepToken(customerRef)
-          .accountsStrict(sweepTokenAccounts(customerRef, authority.publicKey))
-          .rpc(),
+        sweepToken(m1, customerRef, collectorA.publicKey, authority),
         "Unauthorized"
       );
-      expect(await tokenBalance(ata(depositPda(customerRef)))).to.equal(
+      expect(await tokenBalance(ata(depositPda(m1, customerRef)))).to.equal(
         deposited
       );
     });
 
     it("rejects a sweep that names a different settlement token account", async () => {
-      const accounts = sweepTokenAccounts(customerRef, sweeper.publicKey);
+      const accounts = sweepTokenAccounts(
+        m1,
+        customerRef,
+        m1.sweeper.publicKey,
+        collectorA.publicKey
+      );
       accounts.settlementTokenAccount = ata(outsider.publicKey);
       await expectFailure(
         program.methods
           .sweepToken(customerRef)
           .accountsStrict(accounts)
-          .signers([sweeper])
+          .signers([m1.sweeper])
           .rpc(),
         "ConstraintTokenOwner"
       );
-      // Swapping the wallet too: Anchor checks the init_if_needed ATA owner before the
-      // `address` constraint, so this surfaces as the owner mismatch (sweep_sol covers
-      // ConstraintAddress directly). Either way the transaction fails.
-      accounts.settlementTokenAccount = ata(settlementWallet.publicKey);
+      // Swapping the wallet too, so that the token account is a valid ATA of
+      // the named wallet: the `address` pin on the wallet rejects it.
       accounts.settlementWallet = outsider.publicKey;
       await expectFailure(
         program.methods
           .sweepToken(customerRef)
           .accountsStrict(accounts)
-          .signers([sweeper])
+          .signers([m1.sweeper])
           .rpc(),
-        "ConstraintTokenOwner"
+        "ConstraintAddress"
       );
     });
 
-    it("moves the whole balance with the exact split and closes the deposit ATA", async () => {
-      const depositAta = ata(depositPda(customerRef));
-      const before = {
-        settlement: await tokenBalance(ata(settlementWallet.publicKey)),
-        collector: await tokenBalance(ata(feeCollector.publicKey)),
-        sweeperLamports: await connection.getBalance(sweeper.publicKey),
-        rent: (await connection.getAccountInfo(depositAta))!.lamports,
-      };
-
-      const sig = await program.methods
-        .sweepToken(customerRef)
-        .accountsStrict(sweepTokenAccounts(customerRef, sweeper.publicKey))
-        .signers([sweeper])
-        .rpc();
-
-      expect(expectedFee).to.equal(2_500n);
-      expect(await tokenBalance(ata(settlementWallet.publicKey))).to.equal(
-        before.settlement + deposited - expectedFee
+    it("rejects a sweep with a fee collector other than the merchant's", async () => {
+      // A different collector together with its own ATA: the `address` check fails.
+      await expectFailure(
+        sweepToken(m1, customerRef, outsider.publicKey),
+        "ConstraintAddress"
       );
-      expect(await tokenBalance(ata(feeCollector.publicKey))).to.equal(
-        before.collector + expectedFee
+      // The merchant's collector but someone else's token account.
+      const accounts = sweepTokenAccounts(
+        m1,
+        customerRef,
+        m1.sweeper.publicKey,
+        collectorA.publicKey
+      );
+      accounts.feeCollectorTokenAccount = ata(outsider.publicKey);
+      await expectFailure(
+        program.methods
+          .sweepToken(customerRef)
+          .accountsStrict(accounts)
+          .signers([m1.sweeper])
+          .rpc(),
+        "ConstraintTokenOwner"
+      );
+      expect(await tokenBalance(ata(depositPda(m1, customerRef)))).to.equal(
+        deposited
+      );
+    });
+
+    it("moves the whole balance with the exact split, closes the deposit ATA and emits DepositSwept", async () => {
+      const depositAta = ata(depositPda(m1, customerRef));
+      const fee = expectedFee(deposited, FEE_BPS_A);
+      expect(fee).to.equal(2_500n);
+      const before = {
+        settlement: await tokenBalance(ata(m1.settlement.publicKey)),
+        collector: await tokenBalance(ata(collectorA.publicKey)),
+        sweeperLamports: await lamports(m1.sweeper.publicKey),
+        rent: BigInt((await connection.getAccountInfo(depositAta))!.lamports),
+        destinationAtas: await Promise.all(
+          [m1.settlement.publicKey, collectorA.publicKey].map((o) =>
+            connection.getAccountInfo(ata(o))
+          )
+        ),
+      };
+      expect(before.destinationAtas.every((a) => a === null)).to.be.true;
+
+      const sig = await sweepToken(m1, customerRef, collectorA.publicKey);
+
+      expect(await tokenBalance(ata(m1.settlement.publicKey))).to.equal(
+        before.settlement + deposited - fee
+      );
+      expect(await tokenBalance(ata(collectorA.publicKey))).to.equal(
+        before.collector + fee
       );
       expect(await connection.getAccountInfo(depositAta), "deposit ATA closed")
         .to.be.null;
-      // The provider wallet pays the tx fee, so the sweeper's balance changes only by the rent.
-      expect(await connection.getBalance(sweeper.publicKey)).to.equal(
-        before.sweeperLamports + before.rent
+      // The sweeper paid rent for the two destination ATAs it created and got
+      // back the rent of the closed deposit ATA (all ATAs have the same size).
+      // The provider wallet pays the transaction fee.
+      expect(await lamports(m1.sweeper.publicKey)).to.equal(
+        before.sweeperLamports - before.rent
       );
 
       const [ev] = await eventsOf(sig, "depositSwept");
       expect(ev, "DepositSwept event").to.not.be.undefined;
-      expect(ev.data.merchantId).to.deep.equal(merchantId);
+      expect(ev.data.merchantId).to.deep.equal(m1.id);
       expect(ev.data.customerRef).to.deep.equal(customerRef);
       expect(ev.data.mint.equals(mint)).to.be.true;
       expect(ev.data.amount.toString()).to.equal(deposited.toString());
-      expect(ev.data.fee.toString()).to.equal(expectedFee.toString());
+      expect(ev.data.fee.toString()).to.equal(fee.toString());
+    });
+
+    it("recreates the ATA for a later deposit, sums repeated deposits, and returns the rent to the sweeper", async () => {
+      const depositAta = ata(depositPda(m1, customerRef));
+      const first = 100_000n;
+      const second = 200_001n;
+      const recreated = await depositTokens(m1, customerRef, first);
+      expect(recreated.equals(depositAta), "same ATA address").to.be.true;
+      await depositTokens(m1, customerRef, second);
+      const total = first + second;
+      expect(await tokenBalance(depositAta)).to.equal(total);
+
+      const fee = expectedFee(total, FEE_BPS_A);
+      expect(fee).to.equal(1_500n); // 300_001 * 50 / 10_000 = 1500.005, rounded down
+      const before = {
+        settlement: await tokenBalance(ata(m1.settlement.publicKey)),
+        collector: await tokenBalance(ata(collectorA.publicKey)),
+        sweeperLamports: await lamports(m1.sweeper.publicKey),
+        rent: BigInt((await connection.getAccountInfo(depositAta))!.lamports),
+      };
+      const sig = await sweepToken(m1, customerRef, collectorA.publicKey);
+      expect(await tokenBalance(ata(m1.settlement.publicKey))).to.equal(
+        before.settlement + total - fee
+      );
+      expect(await tokenBalance(ata(collectorA.publicKey))).to.equal(
+        before.collector + fee
+      );
+      expect(await connection.getAccountInfo(depositAta)).to.be.null;
+      // Destination ATAs exist now, so the sweeper only receives the rent back.
+      expect(await lamports(m1.sweeper.publicKey)).to.equal(
+        before.sweeperLamports + before.rent
+      );
+      const [ev] = await eventsOf(sig, "depositSwept");
+      expect(ev.data.amount.toString()).to.equal(total.toString());
+      expect(ev.data.fee.toString()).to.equal(fee.toString());
+    });
+
+    it("rounds a fee below one unit down to zero and skips the fee transfer", async () => {
+      const ref = id32("customer-small");
+      const amount = 199n; // 199 * 50 / 10_000 = 0.995
+      await depositTokens(m1, ref, amount);
+      const before = {
+        settlement: await tokenBalance(ata(m1.settlement.publicKey)),
+        collector: await tokenBalance(ata(collectorA.publicKey)),
+      };
+      const sig = await sweepToken(m1, ref, collectorA.publicKey);
+      expect(await tokenBalance(ata(m1.settlement.publicKey))).to.equal(
+        before.settlement + amount
+      );
+      expect(await tokenBalance(ata(collectorA.publicKey))).to.equal(
+        before.collector
+      );
+      const [ev] = await eventsOf(sig, "depositSwept");
+      expect(ev.data.fee.toString()).to.equal("0");
     });
 
     it("rejects sweeping an empty deposit", async () => {
       const emptyRef = id32("customer-empty");
-      await createAssociatedTokenAccount(
-        connection,
-        authority,
-        mint,
-        depositPda(emptyRef),
-        undefined,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID,
-        true
-      );
+      await depositTokens(m1, emptyRef, 0n);
       await expectFailure(
-        program.methods
-          .sweepToken(emptyRef)
-          .accountsStrict(sweepTokenAccounts(emptyRef, sweeper.publicKey))
-          .signers([sweeper])
-          .rpc(),
+        sweepToken(m1, emptyRef, collectorA.publicKey),
         "NothingToSweep"
       );
     });
 
-    it("lets the admin sweep as well as the delegated sweeper", async () => {
+    it("lets the admin sweep as well as the sweeper", async () => {
       const ref = id32("customer-2");
-      const depositAta = await createAssociatedTokenAccount(
-        connection,
-        authority,
-        mint,
-        depositPda(ref),
-        undefined,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID,
-        true
-      );
-      await mintTo(connection, authority, mint, depositAta, authority, 10_000);
-      const before = await tokenBalance(ata(settlementWallet.publicKey));
-      await program.methods
-        .sweepToken(ref)
-        .accountsStrict(sweepTokenAccounts(ref, merchantAdmin.publicKey))
-        .signers([merchantAdmin])
-        .rpc();
-      expect(await tokenBalance(ata(settlementWallet.publicKey))).to.equal(
+      await depositTokens(m1, ref, 10_000n);
+      const before = await tokenBalance(ata(m1.settlement.publicKey));
+      await sweepToken(m1, ref, collectorA.publicKey, m1.admin);
+      expect(await tokenBalance(ata(m1.settlement.publicKey))).to.equal(
         before + 9_950n
       );
+    });
+
+    it("still sweeps while the merchant is inactive", async () => {
+      const asAdmin = { admin: m1.admin.publicKey, merchant: m1.pda };
+      await program.methods
+        .setMerchantActive(false)
+        .accountsStrict(asAdmin)
+        .signers([m1.admin])
+        .rpc();
+      const ref = id32("customer-inactive");
+      await depositTokens(m1, ref, 40_000n);
+      const before = await tokenBalance(ata(m1.settlement.publicKey));
+      await sweepToken(m1, ref, collectorA.publicKey);
+      expect(await tokenBalance(ata(m1.settlement.publicKey))).to.equal(
+        before + 40_000n - expectedFee(40_000n, FEE_BPS_A)
+      );
+      await program.methods
+        .setMerchantActive(true)
+        .accountsStrict(asAdmin)
+        .signers([m1.admin])
+        .rpc();
     });
   });
 
   describe("sweep_sol", () => {
     const customerRef = id32("customer-sol");
     const deposited = BigInt(LAMPORTS_PER_SOL);
-    const expectedFee = (deposited * BigInt(FEE_BPS_SWEEP)) / 10_000n;
 
     before(async () => {
-      const tx = new Transaction().add(
-        SystemProgram.transfer({
-          fromPubkey: authority.publicKey,
-          toPubkey: depositPda(customerRef),
-          lamports: Number(deposited),
-        })
-      );
-      await provider.sendAndConfirm(tx, [authority]);
-      expect(await connection.getBalance(depositPda(customerRef))).to.equal(
-        Number(deposited)
-      );
+      await depositSol(m1, customerRef, deposited);
+      expect(await lamports(depositPda(m1, customerRef))).to.equal(deposited);
     });
 
-    it("rejects a sweep from the vendor authority", async () => {
+    it("rejects a sweep from a stranger or from the vendor authority", async () => {
       await expectFailure(
-        program.methods
-          .sweepSol(customerRef)
-          .accountsStrict(sweepSolAccounts(customerRef, authority.publicKey))
-          .rpc(),
+        sweepSol(m1, customerRef, collectorA.publicKey, outsider),
+        "Unauthorized"
+      );
+      await expectFailure(
+        sweepSol(m1, customerRef, collectorA.publicKey, authority),
         "Unauthorized"
       );
     });
 
-    it("rejects a sweep whose destination is not the registered settlement wallet", async () => {
-      const accounts = sweepSolAccounts(customerRef, sweeper.publicKey);
+    it("rejects a destination other than the registered settlement wallet", async () => {
+      const accounts = sweepSolAccounts(
+        m1,
+        customerRef,
+        m1.sweeper.publicKey,
+        collectorA.publicKey
+      );
       accounts.settlementWallet = outsider.publicKey;
       await expectFailure(
         program.methods
           .sweepSol(customerRef)
           .accountsStrict(accounts)
-          .signers([sweeper])
-          .rpc(),
-        "ConstraintAddress"
-      );
-      accounts.settlementWallet = settlementWallet.publicKey;
-      accounts.feeCollector = outsider.publicKey;
-      await expectFailure(
-        program.methods
-          .sweepSol(customerRef)
-          .accountsStrict(accounts)
-          .signers([sweeper])
+          .signers([m1.sweeper])
           .rpc(),
         "ConstraintAddress"
       );
     });
 
-    it("moves every lamport with the exact split", async () => {
-      const before = {
-        settlement: await connection.getBalance(settlementWallet.publicKey),
-        collector: await connection.getBalance(feeCollector.publicKey),
-      };
-      const sig = await program.methods
-        .sweepSol(customerRef)
-        .accountsStrict(sweepSolAccounts(customerRef, sweeper.publicKey))
-        .signers([sweeper])
-        .rpc();
+    it("rejects a fee collector other than the merchant's", async () => {
+      await expectFailure(
+        sweepSol(m1, customerRef, outsider.publicKey),
+        "ConstraintAddress"
+      );
+      expect(await lamports(depositPda(m1, customerRef))).to.equal(deposited);
+    });
 
-      expect(await connection.getBalance(depositPda(customerRef))).to.equal(0);
-      expect(
-        BigInt(await connection.getBalance(settlementWallet.publicKey))
-      ).to.equal(BigInt(before.settlement) + deposited - expectedFee);
-      expect(
-        BigInt(await connection.getBalance(feeCollector.publicKey))
-      ).to.equal(BigInt(before.collector) + expectedFee);
+    it("moves every lamport with the exact split", async () => {
+      const fee = expectedFee(deposited, FEE_BPS_A);
+      const before = {
+        settlement: await lamports(m1.settlement.publicKey),
+        collector: await lamports(collectorA.publicKey),
+      };
+      const sig = await sweepSol(m1, customerRef, collectorA.publicKey);
+
+      expect(await lamports(depositPda(m1, customerRef))).to.equal(0n);
+      expect(await lamports(m1.settlement.publicKey)).to.equal(
+        before.settlement + deposited - fee
+      );
+      expect(await lamports(collectorA.publicKey)).to.equal(
+        before.collector + fee
+      );
 
       const [ev] = await eventsOf(sig, "depositSwept");
+      expect(ev.data.merchantId).to.deep.equal(m1.id);
+      expect(ev.data.customerRef).to.deep.equal(customerRef);
       expect(ev.data.mint.equals(PublicKey.default)).to.be.true;
       expect(ev.data.amount.toString()).to.equal(deposited.toString());
-      expect(ev.data.fee.toString()).to.equal(expectedFee.toString());
+      expect(ev.data.fee.toString()).to.equal(fee.toString());
     });
 
     it("rejects sweeping an empty deposit", async () => {
       await expectFailure(
-        program.methods
-          .sweepSol(customerRef)
-          .accountsStrict(sweepSolAccounts(customerRef, sweeper.publicKey))
-          .signers([sweeper])
-          .rpc(),
+        sweepSol(m1, customerRef, collectorA.publicKey),
         "NothingToSweep"
       );
+    });
+
+    it("sums repeated deposits to one address and rounds the fee down", async () => {
+      const first = BigInt(LAMPORTS_PER_SOL);
+      const second = 199n;
+      await depositSol(m1, customerRef, first);
+      await depositSol(m1, customerRef, second);
+      const total = first + second;
+      const fee = expectedFee(total, FEE_BPS_A);
+      expect(fee).to.equal(5_000_000n); // 1_000_000_199 * 50 / 10_000 = 5_000_000.995
+      const before = {
+        settlement: await lamports(m1.settlement.publicKey),
+        collector: await lamports(collectorA.publicKey),
+      };
+      const sig = await sweepSol(m1, customerRef, collectorA.publicKey);
+      expect(await lamports(depositPda(m1, customerRef))).to.equal(0n);
+      expect(await lamports(m1.settlement.publicKey)).to.equal(
+        before.settlement + total - fee
+      );
+      expect(await lamports(collectorA.publicKey)).to.equal(
+        before.collector + fee
+      );
+      const [ev] = await eventsOf(sig, "depositSwept");
+      expect(ev.data.amount.toString()).to.equal(total.toString());
+    });
+
+    it("still sweeps while the merchant is inactive, signed by the admin", async () => {
+      const asAdmin = { admin: m1.admin.publicKey, merchant: m1.pda };
+      await program.methods
+        .setMerchantActive(false)
+        .accountsStrict(asAdmin)
+        .signers([m1.admin])
+        .rpc();
+      const ref = id32("customer-sol-inactive");
+      const amount = BigInt(LAMPORTS_PER_SOL / 2);
+      await depositSol(m1, ref, amount);
+      const before = await lamports(m1.settlement.publicKey);
+      await sweepSol(m1, ref, collectorA.publicKey, m1.admin);
+      expect(await lamports(m1.settlement.publicKey)).to.equal(
+        before + amount - expectedFee(amount, FEE_BPS_A)
+      );
+      await program.methods
+        .setMerchantActive(true)
+        .accountsStrict(asAdmin)
+        .signers([m1.admin])
+        .rpc();
+    });
+  });
+
+  describe("fee terms are fixed per merchant", () => {
+    const tokenRef = id32("customer-after-change");
+    const solRef = id32("customer-sol-after-change");
+
+    it("set_fee_terms changes the config but not an already registered merchant", async () => {
+      const merchantBefore = await program.account.merchant.fetch(m1.pda);
+      await program.methods
+        .setFeeTerms(collectorB.publicKey, FEE_BPS_B)
+        .accountsStrict(authorityOnly())
+        .rpc();
+      const cfg = await program.account.globalConfig.fetch(configPda);
+      expect(cfg.feeCollector.equals(collectorB.publicKey)).to.be.true;
+      expect(cfg.feeBps).to.equal(FEE_BPS_B);
+
+      const merchantAfter = await program.account.merchant.fetch(m1.pda);
+      expect(merchantAfter.feeCollector.equals(collectorA.publicKey)).to.be
+        .true;
+      expect(merchantAfter.feeBps).to.equal(FEE_BPS_A);
+      expect(merchantAfter).to.deep.equal(merchantBefore);
+    });
+
+    it("sweeps for the earlier merchant still use its registered terms", async () => {
+      const amount = 1_000_000n;
+      await depositTokens(m1, tokenRef, amount);
+      await depositSol(m1, solRef, BigInt(LAMPORTS_PER_SOL));
+
+      // The vendor's current collector is not this merchant's collector.
+      await expectFailure(
+        sweepToken(m1, tokenRef, collectorB.publicKey),
+        "ConstraintAddress"
+      );
+      await expectFailure(
+        sweepSol(m1, solRef, collectorB.publicKey),
+        "ConstraintAddress"
+      );
+
+      const before = {
+        settlement: await tokenBalance(ata(m1.settlement.publicKey)),
+        collectorA: await tokenBalance(ata(collectorA.publicKey)),
+        collectorBLamports: await lamports(collectorB.publicKey),
+        collectorALamports: await lamports(collectorA.publicKey),
+      };
+      const sig = await sweepToken(m1, tokenRef, collectorA.publicKey);
+      const fee = expectedFee(amount, FEE_BPS_A);
+      expect(fee).to.equal(5_000n);
+      expect(await tokenBalance(ata(m1.settlement.publicKey))).to.equal(
+        before.settlement + amount - fee
+      );
+      expect(await tokenBalance(ata(collectorA.publicKey))).to.equal(
+        before.collectorA + fee
+      );
+      expect(await tokenBalance(ata(collectorB.publicKey))).to.equal(0n);
+      const [ev] = await eventsOf(sig, "depositSwept");
+      expect(ev.data.fee.toString()).to.equal(fee.toString());
+
+      await sweepSol(m1, solRef, collectorA.publicKey);
+      expect(await lamports(collectorA.publicKey)).to.equal(
+        before.collectorALamports +
+          expectedFee(BigInt(LAMPORTS_PER_SOL), FEE_BPS_A)
+      );
+      expect(await lamports(collectorB.publicKey)).to.equal(
+        before.collectorBLamports
+      );
+    });
+
+    it("a merchant registered after the change gets the new terms", async () => {
+      const sig = await register(m2);
+      const m = await program.account.merchant.fetch(m2.pda);
+      expect(m.feeCollector.equals(collectorB.publicKey)).to.be.true;
+      expect(m.feeBps).to.equal(FEE_BPS_B);
+      const [ev] = await eventsOf(sig, "merchantRegistered");
+      expect(ev.data.feeCollector.equals(collectorB.publicKey)).to.be.true;
+      expect(ev.data.feeBps).to.equal(FEE_BPS_B);
+
+      const amount = 1_000_000n;
+      await depositTokens(m2, tokenRef, amount);
+      await expectFailure(
+        sweepToken(m2, tokenRef, collectorA.publicKey),
+        "ConstraintAddress"
+      );
+      await sweepToken(m2, tokenRef, collectorB.publicKey);
+      const fee = expectedFee(amount, FEE_BPS_B);
+      expect(fee).to.equal(12_000n);
+      expect(await tokenBalance(ata(m2.settlement.publicKey))).to.equal(
+        amount - fee
+      );
+      expect(await tokenBalance(ata(collectorB.publicKey))).to.equal(fee);
+
+      await depositSol(m2, solRef, BigInt(LAMPORTS_PER_SOL));
+      const before = await lamports(collectorB.publicKey);
+      await sweepSol(m2, solRef, collectorB.publicKey);
+      expect(await lamports(collectorB.publicKey)).to.equal(
+        before + expectedFee(BigInt(LAMPORTS_PER_SOL), FEE_BPS_B)
+      );
+    });
+
+    it("a merchant registered at a zero rate pays no fee on token or SOL sweeps", async () => {
+      await program.methods
+        .setFeeTerms(collectorB.publicKey, 0)
+        .accountsStrict(authorityOnly())
+        .rpc();
+      await register(m3);
+      const m = await program.account.merchant.fetch(m3.pda);
+      expect(m.feeBps).to.equal(0);
+      expect(m.feeCollector.equals(collectorB.publicKey)).to.be.true;
+
+      const amount = 123_456_789n;
+      await depositTokens(m3, tokenRef, amount);
+      const collectorTokens = await tokenBalance(ata(collectorB.publicKey));
+      const sig = await sweepToken(m3, tokenRef, collectorB.publicKey);
+      expect(await tokenBalance(ata(m3.settlement.publicKey))).to.equal(amount);
+      expect(await tokenBalance(ata(collectorB.publicKey))).to.equal(
+        collectorTokens
+      );
+      const [ev] = await eventsOf(sig, "depositSwept");
+      expect(ev.data.fee.toString()).to.equal("0");
+
+      const lamportsIn = BigInt(LAMPORTS_PER_SOL);
+      await depositSol(m3, solRef, lamportsIn);
+      const before = {
+        settlement: await lamports(m3.settlement.publicKey),
+        collector: await lamports(collectorB.publicKey),
+      };
+      await sweepSol(m3, solRef, collectorB.publicKey);
+      expect(await lamports(m3.settlement.publicKey)).to.equal(
+        before.settlement + lamportsIn
+      );
+      expect(await lamports(collectorB.publicKey)).to.equal(before.collector);
     });
   });
 
   describe("no vendor path to merchant funds", () => {
-    it("the IDL exposes no instruction that both requires the authority and touches token accounts", () => {
-      const idl = program.idl as any;
+    const idl = program.idl as any;
+
+    it("the instruction set has no checkout path", () => {
+      expect(idl.instructions.map((ix: any) => ix.name).sort()).to.deep.equal([
+        "initializeConfig",
+        "registerMerchant",
+        "setFeeTerms",
+        "setMerchantActive",
+        "setSettlementWallet",
+        "setSweeper",
+        "sweepSol",
+        "sweepToken",
+        "transferAuthority",
+      ]);
+    });
+
+    it("authority-gated instructions touch no merchant, token account or deposit address", () => {
       const authorityIxs = idl.instructions.filter((ix: any) =>
         ix.accounts.some((a: any) => a.name === "authority")
       );
       expect(authorityIxs.map((ix: any) => ix.name).sort()).to.deep.equal([
         "initializeConfig",
-        "setFeeCollector",
-        "setFees",
+        "setFeeTerms",
         "transferAuthority",
       ]);
       for (const ix of authorityIxs) {
         const names = ix.accounts.map((a: any) => a.name);
-        expect(names).to.not.include("tokenProgram");
-        expect(names).to.not.include("settlementWallet");
-        expect(names).to.not.include("depositAuthority");
+        for (const forbidden of [
+          "merchant",
+          "tokenProgram",
+          "settlementWallet",
+          "depositAuthority",
+        ]) {
+          expect(names, `${ix.name} accounts`).to.not.include(forbidden);
+        }
+      }
+    });
+
+    it("sweeps do not read the vendor config", () => {
+      for (const name of ["sweepToken", "sweepSol"]) {
+        const ix = idl.instructions.find((i: any) => i.name === name);
+        expect(ix.accounts.map((a: any) => a.name)).to.not.include("config");
       }
     });
   });
