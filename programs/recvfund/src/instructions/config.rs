@@ -1,6 +1,7 @@
 use anchor_lang::prelude::*;
 
 use crate::errors::RecvFundError;
+use crate::events::FeeTermsUpdated;
 use crate::state::{GlobalConfig, CONFIG_SEED, MAX_FEE_BPS};
 
 #[derive(Accounts)]
@@ -18,27 +19,39 @@ pub struct InitializeConfig<'info> {
     pub system_program: Program<'info, System>,
 }
 
+fn validate_fee_terms(fee_collector: Pubkey, fee_bps: u16) -> Result<()> {
+    require!(fee_bps <= MAX_FEE_BPS, RecvFundError::FeeTooHigh);
+    require!(
+        fee_collector != Pubkey::default(),
+        RecvFundError::InvalidFeeCollector
+    );
+    Ok(())
+}
+
 pub fn initialize_config(
     ctx: Context<InitializeConfig>,
     fee_collector: Pubkey,
-    fee_bps_checkout: u16,
-    fee_bps_sweep: u16,
+    fee_bps: u16,
 ) -> Result<()> {
-    require!(fee_bps_checkout <= MAX_FEE_BPS, RecvFundError::FeeTooHigh);
-    require!(fee_bps_sweep <= MAX_FEE_BPS, RecvFundError::FeeTooHigh);
+    validate_fee_terms(fee_collector, fee_bps)?;
 
     let config = &mut ctx.accounts.config;
     config.authority = ctx.accounts.authority.key();
     config.fee_collector = fee_collector;
-    config.fee_bps_checkout = fee_bps_checkout;
-    config.fee_bps_sweep = fee_bps_sweep;
+    config.fee_bps = fee_bps;
     config.bump = ctx.bumps.config;
+
+    emit!(FeeTermsUpdated {
+        fee_collector,
+        fee_bps
+    });
     Ok(())
 }
 
 /// Shared context for every authority-only setter. The `has_one` check is the
-/// only privilege the vendor holds; none of these setters can reference a
-/// token account or a merchant, so they cannot move funds.
+/// only privilege the vendor holds. None of these setters references a token
+/// account, a merchant account or a deposit address, so they cannot move funds
+/// or change the terms of an existing merchant.
 #[derive(Accounts)]
 pub struct AuthorityOnly<'info> {
     pub authority: Signer<'info>,
@@ -51,21 +64,22 @@ pub struct AuthorityOnly<'info> {
     pub config: Account<'info, GlobalConfig>,
 }
 
-pub fn set_fees(
+/// Sets the fee terms that `register_merchant` copies into merchants that
+/// register after this call. Merchants already registered keep the terms in
+/// their own account; this instruction does not and cannot touch them.
+pub fn set_fee_terms(
     ctx: Context<AuthorityOnly>,
-    fee_bps_checkout: u16,
-    fee_bps_sweep: u16,
+    fee_collector: Pubkey,
+    fee_bps: u16,
 ) -> Result<()> {
-    require!(fee_bps_checkout <= MAX_FEE_BPS, RecvFundError::FeeTooHigh);
-    require!(fee_bps_sweep <= MAX_FEE_BPS, RecvFundError::FeeTooHigh);
+    validate_fee_terms(fee_collector, fee_bps)?;
     let config = &mut ctx.accounts.config;
-    config.fee_bps_checkout = fee_bps_checkout;
-    config.fee_bps_sweep = fee_bps_sweep;
-    Ok(())
-}
-
-pub fn set_fee_collector(ctx: Context<AuthorityOnly>, new_fee_collector: Pubkey) -> Result<()> {
-    ctx.accounts.config.fee_collector = new_fee_collector;
+    config.fee_collector = fee_collector;
+    config.fee_bps = fee_bps;
+    emit!(FeeTermsUpdated {
+        fee_collector,
+        fee_bps
+    });
     Ok(())
 }
 

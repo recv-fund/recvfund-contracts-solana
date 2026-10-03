@@ -1,8 +1,21 @@
 //! recv.fund settlement program.
 //!
-//! Funds move in one way only: a customer's deposit is swept from a derived
-//! deposit address to the merchant's settlement wallet, minus the fee. No
-//! instruction accepts an arbitrary destination.
+//! Invariants:
+//!
+//! - The vendor is never in the payment path. Customers pay a per-customer
+//!   deposit address derived from the merchant (`["deposit", merchant_pda,
+//!   customer_ref]`). There is no checkout instruction; the program only
+//!   acts when the merchant's sweeper or admin sweeps a deposit.
+//! - Funds leave a deposit address in one way only, `sweep_token` or
+//!   `sweep_sol`, and only to the merchant's settlement wallet and to the fee
+//!   collector stored in that merchant's account. No instruction accepts an
+//!   arbitrary destination.
+//! - A merchant's fee terms (`fee_collector`, `fee_bps`) are copied from
+//!   `GlobalConfig` at registration and no instruction changes them later.
+//! - The vendor authority can change `GlobalConfig`, which affects only
+//!   merchants registered afterwards. It cannot sign a sweep, cannot change a
+//!   merchant account and cannot move funds.
+//! - Every fee rate is capped at `MAX_FEE_BPS` (200 bps) on write and on use.
 
 use anchor_lang::prelude::*;
 
@@ -25,22 +38,17 @@ pub mod recvfund {
     pub fn initialize_config(
         ctx: Context<InitializeConfig>,
         fee_collector: Pubkey,
-        fee_bps_checkout: u16,
-        fee_bps_sweep: u16,
+        fee_bps: u16,
     ) -> Result<()> {
-        instructions::initialize_config(ctx, fee_collector, fee_bps_checkout, fee_bps_sweep)
+        instructions::initialize_config(ctx, fee_collector, fee_bps)
     }
 
-    pub fn set_fees(
+    pub fn set_fee_terms(
         ctx: Context<AuthorityOnly>,
-        fee_bps_checkout: u16,
-        fee_bps_sweep: u16,
+        fee_collector: Pubkey,
+        fee_bps: u16,
     ) -> Result<()> {
-        instructions::set_fees(ctx, fee_bps_checkout, fee_bps_sweep)
-    }
-
-    pub fn set_fee_collector(ctx: Context<AuthorityOnly>, new_fee_collector: Pubkey) -> Result<()> {
-        instructions::set_fee_collector(ctx, new_fee_collector)
+        instructions::set_fee_terms(ctx, fee_collector, fee_bps)
     }
 
     pub fn transfer_authority(ctx: Context<AuthorityOnly>, new_authority: Pubkey) -> Result<()> {

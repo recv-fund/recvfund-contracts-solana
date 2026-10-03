@@ -5,7 +5,7 @@ use anchor_spl::token::{self, CloseAccount, Mint, Token, TokenAccount, Transfer}
 use crate::errors::RecvFundError;
 use crate::events::DepositSwept;
 use crate::fee::split;
-use crate::state::{GlobalConfig, Merchant, CONFIG_SEED, DEPOSIT_SEED, MERCHANT_SEED};
+use crate::state::{Merchant, DEPOSIT_SEED, MERCHANT_SEED};
 
 #[derive(Accounts)]
 #[instruction(customer_ref: [u8; 32])]
@@ -14,9 +14,6 @@ pub struct SweepToken<'info> {
     /// receives the rent from the closed deposit ATA.
     #[account(mut)]
     pub signer: Signer<'info>,
-
-    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
-    pub config: Account<'info, GlobalConfig>,
 
     #[account(
         seeds = [MERCHANT_SEED, merchant.merchant_id.as_ref()],
@@ -52,8 +49,10 @@ pub struct SweepToken<'info> {
     )]
     pub settlement_token_account: Account<'info, TokenAccount>,
 
-    /// CHECK: Pinned to the fee collector in the vendor config.
-    #[account(address = config.fee_collector)]
+    /// CHECK: Pinned to the fee collector stored in this merchant's account at
+    /// registration. The vendor config is not consulted, so a later change to
+    /// the vendor's fee terms cannot redirect this merchant's fees.
+    #[account(address = merchant.fee_collector)]
     pub fee_collector: UncheckedAccount<'info>,
 
     #[account(
@@ -69,11 +68,17 @@ pub struct SweepToken<'info> {
     pub system_program: Program<'info, System>,
 }
 
+/// Moves the whole token balance of one deposit address: `amount - fee` to
+/// the merchant's settlement wallet and `fee` to the fee collector stored in
+/// the merchant account, with `fee` computed at the merchant's stored
+/// `fee_bps`. Both destinations are pinned by account constraints, so these
+/// are the only places the deposit's funds can go. `merchant.is_active` is
+/// not checked: deposits can always be swept.
 pub fn sweep_token(ctx: Context<SweepToken>, customer_ref: [u8; 32]) -> Result<()> {
     let amount = ctx.accounts.deposit_token_account.amount;
     require!(amount > 0, RecvFundError::NothingToSweep);
 
-    let (net, fee) = split(amount, ctx.accounts.config.fee_bps_sweep)?;
+    let (net, fee) = split(amount, ctx.accounts.merchant.fee_bps)?;
 
     let merchant_key = ctx.accounts.merchant.key();
     let bump = ctx.bumps.deposit_authority;

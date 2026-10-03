@@ -1,13 +1,16 @@
 use anchor_lang::prelude::*;
 
 use crate::errors::RecvFundError;
-use crate::state::{Merchant, MERCHANT_SEED};
+use crate::state::{GlobalConfig, Merchant, CONFIG_SEED, MERCHANT_SEED};
 
 #[derive(Accounts)]
 #[instruction(merchant_id: [u8; 32])]
 pub struct RegisterMerchant<'info> {
     #[account(mut)]
     pub admin: Signer<'info>,
+    /// Source of the fee terms copied into the new merchant. Read only.
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, GlobalConfig>,
     #[account(
         init,
         payer = admin,
@@ -22,6 +25,10 @@ pub struct RegisterMerchant<'info> {
 /// Anyone can register: merchants run their own server and are not vetted by
 /// the vendor. The merchant PDA is keyed by `merchant_id`, so a second
 /// registration under the same id fails at account creation.
+///
+/// The vendor's current fee terms are copied into the merchant account here.
+/// No instruction writes `fee_collector` or `fee_bps` on a merchant after
+/// this, so later changes to `GlobalConfig` never reach this merchant.
 pub fn register_merchant(
     ctx: Context<RegisterMerchant>,
     merchant_id: [u8; 32],
@@ -37,6 +44,8 @@ pub fn register_merchant(
     merchant.settlement_wallet = settlement_wallet;
     merchant.sweeper = ctx.accounts.admin.key();
     merchant.is_active = true;
+    merchant.fee_collector = ctx.accounts.config.fee_collector;
+    merchant.fee_bps = ctx.accounts.config.fee_bps;
     merchant.bump = ctx.bumps.merchant;
     Ok(())
 }
