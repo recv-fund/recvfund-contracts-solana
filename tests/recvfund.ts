@@ -11,6 +11,7 @@ import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
   createMint,
+  freezeAccount,
   getAccount,
   getAssociatedTokenAddressSync,
   getOrCreateAssociatedTokenAccount,
@@ -1102,6 +1103,123 @@ describe("recvfund", () => {
         const ix = idl.instructions.find((i: any) => i.name === name);
         expect(ix.accounts.map((a: any) => a.name)).to.not.include("config");
       }
+    });
+  });
+
+  describe("an undeliverable fee never blocks a sweep", () => {
+    // A collector with no lamports and a mint whose freeze authority can
+    // freeze the collector's token account: both are under vendor control.
+    const emptyCollector = Keypair.generate();
+    const m4 = newMerchant("merchant-fee-redirect");
+    let freezableMint: PublicKey;
+
+    before(async () => {
+      await Promise.all(
+        [m4.admin, m4.sweeper, m4.settlement].map((k) => airdrop(k.publicKey))
+      );
+      await program.methods
+        .setFeeTerms(emptyCollector.publicKey, FEE_BPS_A)
+        .accountsStrict(authorityOnly())
+        .rpc();
+      await register(m4);
+      freezableMint = await createMint(
+        connection,
+        authority,
+        authority.publicKey,
+        authority.publicKey,
+        6
+      );
+    });
+
+    it("sends a SOL fee to the settlement wallet when it would leave the collector below rent", async () => {
+      const ref = id32("small-sol");
+      const deposited = 10_000_000n; // 0.01 SOL; fee at 0.5% is far below rent
+      await depositSol(m4, ref, deposited);
+      const before = await lamports(m4.settlement.publicKey);
+      const sig = await sweepSol(m4, ref, emptyCollector.publicKey);
+      expect(await lamports(m4.settlement.publicKey)).to.equal(
+        before + deposited
+      );
+      expect(await lamports(emptyCollector.publicKey)).to.equal(0n);
+      const [redirected] = await eventsOf(sig, "feeRedirected");
+      expect(redirected.data.fee.toString()).to.equal(
+        expectedFee(deposited, FEE_BPS_A).toString()
+      );
+      const [swept] = await eventsOf(sig, "depositSwept");
+      expect(swept.data.fee.toString()).to.equal("0");
+    });
+
+    it("pays a SOL fee that brings the collector to rent exemption", async () => {
+      const ref = id32("large-sol");
+      const deposited = BigInt(LAMPORTS_PER_SOL);
+      await depositSol(m4, ref, deposited);
+      const sig = await sweepSol(m4, ref, emptyCollector.publicKey);
+      const fee = expectedFee(deposited, FEE_BPS_A);
+      expect(await lamports(emptyCollector.publicKey)).to.equal(fee);
+      expect(await eventsOf(sig, "feeRedirected")).to.have.length(0);
+    });
+
+    it("sends a token fee to the settlement wallet when the collector's account is frozen", async () => {
+      const ref = id32("frozen-collector");
+      const amount = 1_000_000n;
+      const depositAuthority = depositPda(m4, ref);
+      const depositAccount = await getOrCreateAssociatedTokenAccount(
+        connection,
+        authority,
+        freezableMint,
+        depositAuthority,
+        true
+      );
+      await mintTo(
+        connection,
+        authority,
+        freezableMint,
+        depositAccount.address,
+        authority,
+        amount
+      );
+      const collectorAccount = await getOrCreateAssociatedTokenAccount(
+        connection,
+        authority,
+        freezableMint,
+        emptyCollector.publicKey,
+        true
+      );
+      await freezeAccount(
+        connection,
+        authority,
+        collectorAccount.address,
+        freezableMint,
+        authority
+      );
+      const ataOf = (owner: PublicKey) =>
+        getAssociatedTokenAddressSync(freezableMint, owner, true);
+      const sig = await program.methods
+        .sweepToken(ref)
+        .accountsStrict({
+          signer: m4.sweeper.publicKey,
+          merchant: m4.pda,
+          depositAuthority,
+          mint: freezableMint,
+          depositTokenAccount: depositAccount.address,
+          settlementWallet: m4.settlement.publicKey,
+          settlementTokenAccount: ataOf(m4.settlement.publicKey),
+          feeCollector: emptyCollector.publicKey,
+          feeCollectorTokenAccount: collectorAccount.address,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([m4.sweeper])
+        .rpc();
+      expect(await tokenBalance(ataOf(m4.settlement.publicKey))).to.equal(
+        amount
+      );
+      expect(await tokenBalance(collectorAccount.address)).to.equal(0n);
+      const [redirected] = await eventsOf(sig, "feeRedirected");
+      expect(redirected.data.mint.equals(freezableMint)).to.be.true;
+      const [swept] = await eventsOf(sig, "depositSwept");
+      expect(swept.data.fee.toString()).to.equal("0");
     });
   });
 });

@@ -3,7 +3,7 @@ use anchor_spl::associated_token::AssociatedToken;
 use anchor_spl::token::{self, CloseAccount, Mint, Token, TokenAccount, Transfer};
 
 use crate::errors::RecvFundError;
-use crate::events::DepositSwept;
+use crate::events::{DepositSwept, FeeRedirected};
 use crate::fee::split;
 use crate::state::{Merchant, DEPOSIT_SEED, MERCHANT_SEED};
 
@@ -80,6 +80,11 @@ pub fn sweep_token(ctx: Context<SweepToken>, customer_ref: [u8; 32]) -> Result<(
 
     let (net, fee) = split(amount, ctx.accounts.merchant.fee_bps)?;
 
+    // A frozen collector token account would make the fee transfer fail and
+    // block the merchant's sweep; the fee goes to the settlement wallet then.
+    let deliverable = fee == 0 || !ctx.accounts.fee_collector_token_account.is_frozen();
+    let (net, fee_paid) = if deliverable { (net, fee) } else { (amount, 0) };
+
     let merchant_key = ctx.accounts.merchant.key();
     let bump = ctx.bumps.deposit_authority;
     let signer_seeds: &[&[&[u8]]] = &[&[
@@ -102,7 +107,7 @@ pub fn sweep_token(ctx: Context<SweepToken>, customer_ref: [u8; 32]) -> Result<(
         net,
     )?;
 
-    if fee > 0 {
+    if fee_paid > 0 {
         token::transfer(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
@@ -113,8 +118,15 @@ pub fn sweep_token(ctx: Context<SweepToken>, customer_ref: [u8; 32]) -> Result<(
                 },
                 signer_seeds,
             ),
-            fee,
+            fee_paid,
         )?;
+    } else if fee > 0 {
+        emit!(FeeRedirected {
+            merchant_id: ctx.accounts.merchant.merchant_id,
+            customer_ref,
+            mint: ctx.accounts.mint.key(),
+            fee,
+        });
     }
 
     // The ATA is empty now; closing returns its rent to whoever ran the sweep.
@@ -134,7 +146,7 @@ pub fn sweep_token(ctx: Context<SweepToken>, customer_ref: [u8; 32]) -> Result<(
         customer_ref,
         mint: ctx.accounts.mint.key(),
         amount,
-        fee,
+        fee: fee_paid,
     });
     Ok(())
 }

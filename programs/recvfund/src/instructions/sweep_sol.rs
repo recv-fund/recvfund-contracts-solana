@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_lang::system_program::{self, Transfer};
 
 use crate::errors::RecvFundError;
-use crate::events::DepositSwept;
+use crate::events::{DepositSwept, FeeRedirected};
 use crate::fee::split;
 use crate::state::{Merchant, DEPOSIT_SEED, MERCHANT_SEED};
 
@@ -49,6 +49,20 @@ pub fn sweep_sol(ctx: Context<SweepSol>, customer_ref: [u8; 32]) -> Result<()> {
 
     let (net, fee) = split(amount, ctx.accounts.merchant.fee_bps)?;
 
+    // A transfer that leaves the collector below rent exemption fails, and
+    // the vendor controls the collector's balance. Rather than let that block
+    // the merchant's sweep, an undeliverable fee goes to the settlement wallet.
+    let collector = ctx.accounts.fee_collector.to_account_info();
+    let rent_minimum = Rent::get()?.minimum_balance(collector.data_len());
+    let deliverable = fee == 0
+        || (!collector.executable
+            && collector
+                .lamports()
+                .checked_add(fee)
+                .ok_or(RecvFundError::MathOverflow)?
+                >= rent_minimum);
+    let (net, fee_paid) = if deliverable { (net, fee) } else { (amount, 0) };
+
     let merchant_key = ctx.accounts.merchant.key();
     let bump = ctx.bumps.deposit_authority;
     let signer_seeds: &[&[&[u8]]] = &[&[
@@ -70,7 +84,7 @@ pub fn sweep_sol(ctx: Context<SweepSol>, customer_ref: [u8; 32]) -> Result<()> {
         net,
     )?;
 
-    if fee > 0 {
+    if fee_paid > 0 {
         system_program::transfer(
             CpiContext::new_with_signer(
                 ctx.accounts.system_program.to_account_info(),
@@ -80,8 +94,15 @@ pub fn sweep_sol(ctx: Context<SweepSol>, customer_ref: [u8; 32]) -> Result<()> {
                 },
                 signer_seeds,
             ),
-            fee,
+            fee_paid,
         )?;
+    } else if fee > 0 {
+        emit!(FeeRedirected {
+            merchant_id: ctx.accounts.merchant.merchant_id,
+            customer_ref,
+            mint: Pubkey::default(),
+            fee,
+        });
     }
 
     emit!(DepositSwept {
@@ -89,7 +110,7 @@ pub fn sweep_sol(ctx: Context<SweepSol>, customer_ref: [u8; 32]) -> Result<()> {
         customer_ref,
         mint: Pubkey::default(),
         amount,
-        fee,
+        fee: fee_paid,
     });
     Ok(())
 }
