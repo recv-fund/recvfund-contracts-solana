@@ -125,7 +125,10 @@ No instruction changes a merchant's `fee_collector` or `fee_bps`.
 
 Moves the entire balance, then closes the deposit ATA. A later deposit
 recreates the ATA at the same address. Rejects an empty balance
-(`NothingToSweep`). Emits `DepositSwept { merchant_id, customer_ref, mint, amount, fee }`.
+(`NothingToSweep`). If the fee collector's token account is frozen, the fee
+goes to the settlement token account instead and `FeeRedirected` is emitted.
+Emits `DepositSwept { merchant_id, customer_ref, mint, amount, fee }`, where
+`fee` is what the collector received (0 when redirected).
 
 `sweep_sol(customer_ref)` - signer: merchant `sweeper` or `admin`
 
@@ -141,9 +144,12 @@ recreates the ATA at the same address. Rejects an empty balance
 Transfers every lamport out of the deposit address, leaving it at 0. Emits
 `DepositSwept` with `mint = Pubkey::default()` (all zeros) to mark native SOL.
 The system program refuses a transfer that would leave the *destination*
-below rent exemption while non-zero, so a settlement wallet or fee collector
-that has never been funded cannot receive a sweep or a fee smaller than
-roughly 0.0009 SOL.
+below rent exemption while non-zero. The vendor controls the fee collector's
+balance, so the program checks first: if the collector's balance plus the fee
+would stay below rent exemption, the fee goes to the settlement wallet and
+`FeeRedirected` is emitted. No account the vendor controls can block a sweep.
+A settlement wallet that has never been funded still cannot receive a sweep
+smaller than roughly 0.0009 SOL; that wallet is the merchant's own.
 
 Neither sweep takes the `config` account: the rate and the fee collector come
 from the merchant account only.
@@ -155,6 +161,7 @@ from the merchant account only.
 | `FeeTermsUpdated`    | `fee_collector: Pubkey, fee_bps: u16`                                     | `initialize_config`, `set_fee_terms` |
 | `MerchantRegistered` | `merchant_id: [u8; 32], admin, settlement_wallet, sweeper, fee_collector: Pubkey, fee_bps: u16` | `register_merchant` |
 | `DepositSwept`       | `merchant_id: [u8; 32], customer_ref: [u8; 32], mint: Pubkey, amount: u64, fee: u64` | `sweep_token`, `sweep_sol` |
+| `FeeRedirected`      | `merchant_id: [u8; 32], customer_ref: [u8; 32], mint: Pubkey, fee: u64`   | `sweep_token`, `sweep_sol` when the collector cannot accept the fee |
 
 ### Errors
 
