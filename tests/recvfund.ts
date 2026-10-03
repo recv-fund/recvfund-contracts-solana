@@ -537,6 +537,15 @@ describe("recvfund", () => {
         "InvalidSettlementWallet"
       );
 
+      await expectFailure(
+        program.methods
+          .setSweeper(PublicKey.default)
+          .accountsStrict(asAdmin)
+          .signers([m1.admin])
+          .rpc(),
+        "InvalidSweeper"
+      );
+
       await program.methods
         .setSweeper(tmp)
         .accountsStrict(asAdmin)

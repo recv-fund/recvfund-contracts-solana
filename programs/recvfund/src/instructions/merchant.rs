@@ -90,6 +90,7 @@ pub fn set_settlement_wallet(
 }
 
 pub fn set_sweeper(ctx: Context<MerchantAdminOnly>, new_sweeper: Pubkey) -> Result<()> {
+    require!(new_sweeper != Pubkey::default(), RecvFundError::InvalidSweeper);
     ctx.accounts.merchant.sweeper = new_sweeper;
     Ok(())
 }
