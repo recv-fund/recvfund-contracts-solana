@@ -12,6 +12,8 @@ pub enum RecvFundError {
     NothingToSweep,
     #[msg("Settlement wallet cannot be the default pubkey")]
     InvalidSettlementWallet,
+    #[msg("Sweeper cannot be the default pubkey")]
+    InvalidSweeper,
     #[msg("Fee collector cannot be the default pubkey")]
     InvalidFeeCollector,
 }

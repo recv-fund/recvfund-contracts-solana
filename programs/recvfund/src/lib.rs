@@ -61,8 +61,9 @@ pub mod recvfund {
         ctx: Context<RegisterMerchant>,
         merchant_id: [u8; 32],
         settlement_wallet: Pubkey,
+        sweeper: Pubkey,
     ) -> Result<()> {
-        instructions::register_merchant(ctx, merchant_id, settlement_wallet)
+        instructions::register_merchant(ctx, merchant_id, settlement_wallet, sweeper)
     }
 
     pub fn set_settlement_wallet(

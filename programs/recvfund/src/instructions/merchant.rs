@@ -1,6 +1,7 @@
 use anchor_lang::prelude::*;
 
 use crate::errors::RecvFundError;
+use crate::events::MerchantRegistered;
 use crate::state::{GlobalConfig, Merchant, CONFIG_SEED, MERCHANT_SEED};
 
 #[derive(Accounts)]
@@ -23,8 +24,10 @@ pub struct RegisterMerchant<'info> {
 }
 
 /// Anyone can register: merchants run their own server and are not vetted by
-/// the vendor. The merchant PDA is keyed by `merchant_id`, so a second
-/// registration under the same id fails at account creation.
+/// the vendor. The signer becomes `admin`; the settlement wallet and the
+/// sweeper are set in the same instruction, so a merchant is fully usable
+/// after one transaction. The merchant PDA is keyed by `merchant_id`, so a
+/// second registration under the same id fails at account creation.
 ///
 /// The vendor's current fee terms are copied into the merchant account here.
 /// No instruction writes `fee_collector` or `fee_bps` on a merchant after
@@ -33,20 +36,31 @@ pub fn register_merchant(
     ctx: Context<RegisterMerchant>,
     merchant_id: [u8; 32],
     settlement_wallet: Pubkey,
+    sweeper: Pubkey,
 ) -> Result<()> {
     require!(
         settlement_wallet != Pubkey::default(),
         RecvFundError::InvalidSettlementWallet
     );
+    require!(sweeper != Pubkey::default(), RecvFundError::InvalidSweeper);
     let merchant = &mut ctx.accounts.merchant;
     merchant.merchant_id = merchant_id;
     merchant.admin = ctx.accounts.admin.key();
     merchant.settlement_wallet = settlement_wallet;
-    merchant.sweeper = ctx.accounts.admin.key();
+    merchant.sweeper = sweeper;
     merchant.is_active = true;
     merchant.fee_collector = ctx.accounts.config.fee_collector;
     merchant.fee_bps = ctx.accounts.config.fee_bps;
     merchant.bump = ctx.bumps.merchant;
+
+    emit!(MerchantRegistered {
+        merchant_id,
+        admin: merchant.admin,
+        settlement_wallet,
+        sweeper,
+        fee_collector: merchant.fee_collector,
+        fee_bps: merchant.fee_bps,
+    });
     Ok(())
 }
 
