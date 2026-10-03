@@ -281,9 +281,18 @@ repository; the keypair of the superseded ID is archived at
 
 | Cluster | Program | Status |
 |---|---|---|
-| devnet | `FAZUvvc2anrhgkP6sVczAHp2wkFCfhzpFcbiBt1mVM8J` | not deployed |
+| devnet | `FAZUvvc2anrhgkP6sVczAHp2wkFCfhzpFcbiBt1mVM8J` | deployed 2026-10-03; config `5uLBoziU1on7DmPDyYPobgZhkFeWtjy91GW3HGWxFLcT`, fee 100 bps to `GStZmhS72eX1euYiwQY9MaxahBopDBLGwfTtXPge3DK`, upgrade and fee authority `58tYVJZ3DadHLW7aA4gGAWNxS1dEkm6ifseFqZ4LyTcV` |
 | mainnet-beta | `FAZUvvc2anrhgkP6sVczAHp2wkFCfhzpFcbiBt1mVM8J` | not deployed |
 | devnet | `G9u3a8P6T5RFsgQhjVC5Yw7oAUqURst5MQJi1rFVkzAt` | **superseded**; old account layout with `pay`, do not integrate |
+
+The devnet deployment of `FAZUvvc2…` was first deployed from commit `a7c0492`
+and upgraded in place the same day to commit `8c7503a` (fee redirect). The
+deployed program holds the 312088-byte binary with SHA-256
+`a5e3df7dd16d4d0f10aed47bb9f3e23a277e213aeac241dab0c7adc1a97f5ed4`, followed by
+zero padding from a 10240-byte account extension; this is the value pinned in
+the server's `provenance.json`. It is a devnet deployment with a live upgrade
+authority, so it is provisional. The fee collector was funded with 0.002 SOL
+so it is rent exempt.
 
 The superseded devnet deployment (2026-09-30, slot 505871112, commit
 `850c891`, 343104-byte binary with SHA-256
