@@ -34,6 +34,12 @@ mod tests {
     }
 
     #[test]
+    fn zero_rate_takes_no_fee() {
+        assert_eq!(split(u64::MAX, 0).unwrap(), (u64::MAX, 0));
+        assert_eq!(split(1, 0).unwrap(), (1, 0));
+    }
+
+    #[test]
     fn handles_u64_max_without_overflow() {
         let (net, fee) = split(u64::MAX, MAX_FEE_BPS).unwrap();
         assert_eq!(net + fee, u64::MAX);
