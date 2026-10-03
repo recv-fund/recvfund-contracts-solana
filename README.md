@@ -256,6 +256,15 @@ cargo test -p recvfund --lib fee   # fee math unit tests
 yarn lint                          # prettier check of the tests
 ```
 
+`cargo check` and `anchor build` print one warning, a deprecated
+`AccountInfo::realloc` call inside code that Anchor 0.31.1 generates for the
+IDL account. It is not in this crate's source and goes away with an Anchor
+upgrade, which changes the binary and requires a redeploy. The features
+`anchor-debug`, `custom-heap` and `custom-panic` in `Cargo.toml`, and the
+`target_os = "solana"` cfg in `[lints.rust]`, are declared only so the
+compiler's cfg check knows the names Anchor's macros test; none is enabled,
+and declaring them does not change the binary.
+
 `Cargo.lock` is committed and pins a handful of transitive crates (`blake3`,
 `indexmap`, `proc-macro-crate`, `zeroize`, ...) to versions that compile
 with rustc 1.79. Do not run a blanket `cargo update`; if you add a dependency,
