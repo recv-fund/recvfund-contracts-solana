@@ -7,10 +7,10 @@ resolution = true
 skip-lint = false
 
 [programs.devnet]
-recvfund = "G9u3a8P6T5RFsgQhjVC5Yw7oAUqURst5MQJi1rFVkzAt"
+recvfund = "FAZUvvc2anrhgkP6sVczAHp2wkFCfhzpFcbiBt1mVM8J"
 
 [programs.localnet]
-recvfund = "G9u3a8P6T5RFsgQhjVC5Yw7oAUqURst5MQJi1rFVkzAt"
+recvfund = "FAZUvvc2anrhgkP6sVczAHp2wkFCfhzpFcbiBt1mVM8J"
 
 [registry]
 url = "https://api.apr.dev"

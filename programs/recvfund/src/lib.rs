@@ -27,7 +27,7 @@ pub mod state;
 
 use instructions::*;
 
-declare_id!("G9u3a8P6T5RFsgQhjVC5Yw7oAUqURst5MQJi1rFVkzAt");
+declare_id!("FAZUvvc2anrhgkP6sVczAHp2wkFCfhzpFcbiBt1mVM8J");
 
 #[program]
 pub mod recvfund {
