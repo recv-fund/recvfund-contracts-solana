@@ -1,15 +1,17 @@
 /*
  * One-time vendor setup after deploying the program: creates the Config PDA
- * with the fee collector and fee rates. The signing keypair becomes the fee
- * authority (it can later call set_fees, set_fee_collector and
- * transfer_authority).
+ * with the fee collector and the fee rate. The signing keypair becomes the
+ * fee authority (it can later call set_fee_terms and transfer_authority).
+ *
+ * These fee terms are copied into each merchant when it registers. Changing
+ * them later with set_fee_terms affects only merchants registered after the
+ * change.
  *
  * Environment:
  *   RPC_URL            cluster RPC endpoint
  *   AUTHORITY_KEYPAIR  path to the signing keypair file (becomes authority)
  *   FEE_COLLECTOR      base58 address that receives fees
- *   FEE_BPS_CHECKOUT   checkout fee in basis points (<= 200)
- *   FEE_BPS_SWEEP      sweep fee in basis points (<= 200)
+ *   FEE_BPS            sweep fee in basis points, integer 0 to 200
  *
  * Usage: node scripts/init-config.cjs   (after `anchor build` has written
  * target/idl/recvfund.json). Prints the config account afterwards. If the
@@ -42,10 +44,12 @@ async function main() {
   const existing = await connection.getAccountInfo(configPda);
   if (!existing) {
     const feeCollector = new PublicKey(need('FEE_COLLECTOR'));
-    const checkout = Number(need('FEE_BPS_CHECKOUT'));
-    const sweep = Number(need('FEE_BPS_SWEEP'));
+    const feeBps = Number(need('FEE_BPS'));
+    if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > 200) {
+      throw new Error('FEE_BPS must be an integer from 0 to 200');
+    }
     const signature = await program.methods
-      .initializeConfig(feeCollector, checkout, sweep)
+      .initializeConfig(feeCollector, feeBps)
       .accountsStrict({
         authority: authority.publicKey,
         config: configPda,
