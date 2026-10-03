@@ -101,7 +101,7 @@ exposes them, their accounts and events in camelCase.
 | ------------------------------------------------------------ | --------------------------------------------------------------------------- | ----- |
 | `register_merchant(merchant_id, settlement_wallet, sweeper)` | `admin` (signer, mut, payer), `config` (PDA `["config"]`, read), `merchant` (init, PDA `["merchant", merchant_id]`), `system_program` | Anyone can call. Signer becomes `admin`. Settlement wallet and sweeper must not be the zero pubkey. Copies `config.fee_collector` and `config.fee_bps` into the merchant. Emits `MerchantRegistered`. One instruction does the whole registration. |
 | `set_settlement_wallet(new_settlement_wallet)`               | `admin` (signer), `merchant` (mut)                                          | Wallet must not be the zero pubkey. |
-| `set_sweeper(new_sweeper)`                                   | `admin` (signer), `merchant` (mut)                                          | |
+| `set_sweeper(new_sweeper)`                                   | `admin` (signer), `merchant` (mut)                                          | Rejects the default pubkey (`InvalidSweeper`). |
 | `set_merchant_active(is_active)`                             | `admin` (signer), `merchant` (mut)                                          | Flag for the merchant's server. Sweeps are unaffected. |
 
 No instruction changes a merchant's `fee_collector` or `fee_bps`.
