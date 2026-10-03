@@ -256,14 +256,19 @@ cargo test -p recvfund --lib fee   # fee math unit tests
 yarn lint                          # prettier check of the tests
 ```
 
-`cargo check` and `anchor build` print one warning, a deprecated
-`AccountInfo::realloc` call inside code that Anchor 0.31.1 generates for the
-IDL account. It is not in this crate's source and goes away with an Anchor
-upgrade, which changes the binary and requires a redeploy. The features
-`anchor-debug`, `custom-heap` and `custom-panic` in `Cargo.toml`, and the
-`target_os = "solana"` cfg in `[lints.rust]`, are declared only so the
-compiler's cfg check knows the names Anchor's macros test; none is enabled,
-and declaring them does not change the binary.
+`cargo check` and `anchor build` print no warnings. Two entries in
+`programs/recvfund/Cargo.toml` exist for code that Anchor generates, not for
+this crate's source. Neither changes the compiled program (the binary hash was
+compared before and after):
+- The features `anchor-debug`, `custom-heap` and `custom-panic`, and the
+  `target_os = "solana"` cfg under `[lints.rust]`, are declared so the
+  compiler's cfg check knows the names Anchor's macros test. None is enabled.
+- `deprecated = "allow"` under `[lints.rust]` hides a deprecated
+  `AccountInfo::realloc` call that Anchor 0.31.1 generates for the IDL
+  account. It also hides deprecations in this crate's own code, so remove it
+  after upgrading Anchor (an upgrade changes the binary and needs a redeploy).
+  A `#[allow(deprecated)]` attribute in `lib.rs` was tried and rejected: it does
+  not reach the generated code, and the extra source line changes the binary.
 
 `Cargo.lock` is committed and pins a handful of transitive crates (`blake3`,
 `indexmap`, `proc-macro-crate`, `zeroize`, ...) to versions that compile

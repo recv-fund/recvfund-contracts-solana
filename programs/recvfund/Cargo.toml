@@ -29,4 +29,9 @@ anchor-spl = "0.31.1"
 # Anchor's entrypoint macros test `target_os = "solana"`, which is a valid
 # target for the Solana toolchain but unknown to the host compiler.
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
+# Anchor 0.31.1's `#[program]` macro generates the IDL account instructions
+# with the deprecated `AccountInfo::realloc`. A lint level here, unlike an
+# attribute in `lib.rs`, leaves the compiled program unchanged. It also hides
+# deprecations in this crate's own code; remove it after upgrading Anchor.
+deprecated = "allow"
 
