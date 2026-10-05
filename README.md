@@ -296,13 +296,11 @@ solana-keygen new -o /tmp/recv-test-wallet.json --no-bip39-passphrase --force
 anchor test --skip-build --provider.wallet /tmp/recv-test-wallet.json
 ```
 
-The program keypair in `target/deploy/recvfund-keypair.json` determines the
-program ID and is gitignored. A fresh clone without it will produce a
-different ID; `declare_id!` in `programs/recvfund/src/lib.rs` and both entries
-in `Anchor.toml` must match the keypair before building. The vendor keeps the
-keypair for `FAZUvvc2anrhgkP6sVczAHp2wkFCfhzpFcbiBt1mVM8J` outside the
-repository; the keypair of the superseded ID is archived at
-`~/.recvfund/keys/solana-program-v1-keypair.json` on the vendor machine.
+A program keypair is needed for a new public deployment, and must remain
+outside Git. Local tests use the public ID from `Anchor.toml`; they do not
+require the original deployment private key or rewrite `declare_id!`. The
+current upgrade authority must be independently located and verified before
+any public upgrade; do not infer access from historical local path notes.
 
 ## Deployments
 
@@ -435,3 +433,53 @@ trailers), update this README and `docs/` so they stay true, and append a
 dated entry to `../recvfund-planning/PROGRESS.md` (Handover log) with what
 changed, what was verified and how, what is broken, and the next step. Full
 rule: `../AGENTS.md`.
+
+## CI and release candidates
+
+`Solana security` runs on every PR and main push with no wallet secrets. It
+pins all actions by commit, host Rust 1.85.1, Node 22.14.0, Yarn 1.22.22,
+Agave 2.1.21, Anchor CLI 0.31.1, cargo-audit 0.22.2 and solana-verify 0.5.2.
+Downloaded executables are SHA-256 checked. The gate runs host unit tests,
+strict Clippy, formatting, TypeScript, RustSec advisory review, a complete
+crates.io yanked/checksum scan, an official Docker SBF build and all 41 actual
+validator tests. No deployment private key is needed; the validator uses a
+throwaway authority. Ordinary `anchor test --skip-build` works with the program
+ID in Anchor.toml even when the program keypair is absent.
+
+The yanked scan retries transient network errors up to three times per package
+and fails if any locked package cannot be checked. This is deliberate:
+cargo-audit 0.22.2 was observed exiting zero after yanked-index timeouts. RustSec
+warnings are matched to the exact reviewed advisory/package/version tuples;
+new warnings and vulnerabilities require review. The documented rand feature
+assumption is checked on every run.
+
+`Prepare devnet candidate` is manually dispatched from the intended source
+revision. It runs the same gate, repeats the SBF build in a clean directory,
+requires byte-identical outputs, and reads devnet ProgramData without a signer.
+It **never deploys**, initializes config, transfers authority, uploads IDL or
+writes verification metadata. It does not require or accept wallet secrets.
+
+The candidate artifact contains `candidate/recvfund.so`, `recvfund.json`,
+`recvfund.ts` and `manifest.json`. Manifest schema 1 records the full source
+commit, public program ID, SHA-256 and byte length for each file, Cargo.lock
+hash, toolchain and Docker digest. `status: candidate` and `deployed: false`
+are unconditional. Server tests may import these into an explicitly isolated
+candidate overlay; the public deployment's pinned provenance stays unchanged.
+Artifacts also include complete check reports and read-only devnet inspection.
+
+The verified build uses the official image
+`solanafoundation/solana-verifiable-build@sha256:c78fd4ff5399ee5ea3e154881e8991bd8064899ca162a59cafc682da5a5bd516`
+(Agave 2.1.21) through `solana-verify build --library-name recvfund --base-image`.
+It is a reproducible **candidate build**, not yet proof that devnet runs it.
+See the [official verification guide](https://solana.com/docs/programs/verified-builds)
+and [pinned tool source](https://github.com/solana-foundation/solana-verifiable-build/tree/v0.5.2).
+
+After review, an operator with the current authority must separately authorize
+an upgrade of the reviewed artifact. Before promotion: verify current
+ProgramData/authority, retain the old binary and config snapshot, approve the
+exact source/hash, perform the controlled upgrade, compare deployed bytes and
+zero padding, run funded devnet server/browser settlement, and update server
+provenance/IDL together. `solana-verify verify-from-repo` can offer an on-chain
+verification-PDA write; it is intentionally absent from preparation CI. New
+programs must initialize config before upgrade-authority revocation. No
+mainnet release is authorized by the artifact workflow.

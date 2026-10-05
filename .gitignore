@@ -14,3 +14,7 @@ id.json
 
 # Editor and OS files
 .DS_Store
+
+# Python release tooling
+__pycache__/
+*.pyc

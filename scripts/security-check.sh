@@ -13,11 +13,15 @@ solana-test-validator --version >> security/artifacts/toolchain.txt
 cargo fmt --all -- --check
 cargo test --locked -p recvfund --lib | tee security/artifacts/cargo-test.txt
 cargo clippy --locked --all-targets -- -D warnings
-cargo audit --json > security/artifacts/cargo-audit.json
-cargo tree --locked -i rand@0.7.3 -e features > security/artifacts/rand-features.txt
+python3 -m unittest discover -s scripts/tests
+python3 scripts/check-dependencies.py
 yarn install --frozen-lockfile
 yarn lint
-bash scripts/build.sh
+if [[ "${RECVFUND_VERIFIED_BUILD:-0}" == "1" ]]; then
+  bash scripts/verified-build.sh
+else
+  bash scripts/build.sh
+fi
 yarn tsc --noEmit
 # Test only a local validator, with a throwaway signer. Never use a merchant key.
 wallet_dir=$(mktemp -d)

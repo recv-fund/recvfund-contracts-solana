@@ -1,0 +1,43 @@
+name: Prepare devnet candidate
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: solana-release-preparation
+  cancel-in-progress: false
+jobs:
+  prepare:
+    # Manual artifact preparation only. No wallet secrets or on-chain writes.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-toolchain
+      - name: Full security gate on the release candidate
+        run: bash scripts/security-check.sh
+        env:
+          RECVFUND_VERIFIED_BUILD: '1'
+      - name: Independently rebuild from clean source and compare SBF bytes
+        shell: bash
+        run: |
+          clean_dir=$(mktemp -d)
+          git archive HEAD | tar -x -C "$clean_dir"
+          solana-verify build "$clean_dir" --library-name recvfund --base-image solanafoundation/solana-verifiable-build@sha256:c78fd4ff5399ee5ea3e154881e8991bd8064899ca162a59cafc682da5a5bd516
+          cmp target/deploy/recvfund.so "$clean_dir/target/deploy/recvfund.so"
+          echo 'Two clean Docker builds produced identical SBF bytes.' | tee security/artifacts/reproducibility.txt
+      - name: Read current devnet ProgramData and compare candidate
+        run: node scripts/inspect-devnet.cjs security/artifacts/candidate/manifest.json
+      - name: Record explicit promotion boundary
+        run: |
+          echo 'Candidate prepared only; no program upgrade, IDL upload, config initialization, authority transfer, or verification PDA write performed.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Review candidate/manifest.json and devnet-inspection.json before proposing a separately authorized upgrade.' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: solana-devnet-candidate-${{ github.sha }}
+          path: security/artifacts/
+          if-no-files-found: error
+          retention-days: 90
