@@ -2,6 +2,7 @@
 target/
 .anchor/
 test-ledger/
+security/artifacts/
 
 # JS dependencies
 node_modules/

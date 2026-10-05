@@ -8,6 +8,18 @@ use crate::state::{GlobalConfig, CONFIG_SEED, MAX_FEE_BPS};
 pub struct InitializeConfig<'info> {
     #[account(mut)]
     pub authority: Signer<'info>,
+    // Bind bootstrap authority to this executable's real loader state, not
+    // merely to whichever signer wins the first transaction after deployment.
+    #[account(
+        constraint = program.programdata_address()? == Some(program_data.key())
+            @ RecvFundError::Unauthorized,
+    )]
+    pub program: Program<'info, crate::program::Recvfund>,
+    #[account(
+        constraint = program_data.upgrade_authority_address == Some(authority.key())
+            @ RecvFundError::Unauthorized,
+    )]
+    pub program_data: Account<'info, ProgramData>,
     #[account(
         init,
         payer = authority,

@@ -9,11 +9,11 @@
  *
  * Environment:
  *   RPC_URL            cluster RPC endpoint
- *   AUTHORITY_KEYPAIR  path to the signing keypair file (becomes authority)
+ *   AUTHORITY_KEYPAIR  path to the current program upgrade-authority keypair
  *   FEE_COLLECTOR      base58 address that receives fees
  *   FEE_BPS            sweep fee in basis points, integer 0 to 200
  *
- * Usage: node scripts/init-config.cjs   (after `anchor build` has written
+ * Usage: node scripts/init-config.cjs   (after `bash scripts/build.sh` has written
  * target/idl/recvfund.json). Prints the config account afterwards. If the
  * config already exists it only prints it.
  */
@@ -41,6 +41,10 @@ async function main() {
   const program = new anchor.Program(idl, provider);
   const [configPda] = PublicKey.findProgramAddressSync([Buffer.from('config')], program.programId);
 
+  const [programData] = PublicKey.findProgramAddressSync(
+    [program.programId.toBuffer()],
+    new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111'),
+  );
   const existing = await connection.getAccountInfo(configPda);
   if (!existing) {
     const feeCollector = new PublicKey(need('FEE_COLLECTOR'));
@@ -52,6 +56,8 @@ async function main() {
       .initializeConfig(feeCollector, feeBps)
       .accountsStrict({
         authority: authority.publicKey,
+        program: program.programId,
+        programData,
         config: configPda,
         systemProgram: SystemProgram.programId,
       })

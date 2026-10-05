@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_spl::associated_token::AssociatedToken;
+use anchor_spl::associated_token::{self, AssociatedToken, Create};
 use anchor_spl::token::{self, CloseAccount, Mint, Token, TokenAccount, Transfer};
 
 use crate::errors::RecvFundError;
@@ -55,13 +55,16 @@ pub struct SweepToken<'info> {
     #[account(address = merchant.fee_collector)]
     pub fee_collector: UncheckedAccount<'info>,
 
+    /// CHECK: The address is the collector's canonical ATA. Its token state is
+    /// checked in the handler so a collector changing ATA authority cannot
+    /// reject the merchant's entire sweep before fee redirection runs.
     #[account(
-        init_if_needed,
-        payer = signer,
-        associated_token::mint = mint,
-        associated_token::authority = fee_collector,
+        mut,
+        address = associated_token::get_associated_token_address(
+            &fee_collector.key(), &mint.key()
+        ),
     )]
-    pub fee_collector_token_account: Account<'info, TokenAccount>,
+    pub fee_collector_token_account: UncheckedAccount<'info>,
 
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
@@ -80,9 +83,35 @@ pub fn sweep_token(ctx: Context<SweepToken>, customer_ref: [u8; 32]) -> Result<(
 
     let (net, fee) = split(amount, ctx.accounts.merchant.fee_bps)?;
 
-    // A frozen collector token account would make the fee transfer fail and
-    // block the merchant's sweep; the fee goes to the settlement wallet then.
-    let deliverable = fee == 0 || !ctx.accounts.fee_collector_token_account.is_frozen();
+    // Create only an absent canonical collector ATA and only when a fee is
+    // owed. Existing malformed, reassigned or frozen accounts redirect the
+    // fee instead of becoming a vendor-controlled denial of service.
+    let collector_account = ctx.accounts.fee_collector_token_account.to_account_info();
+    if fee > 0
+        && collector_account.owner == &anchor_lang::system_program::ID
+        && collector_account.data_is_empty()
+    {
+        associated_token::create(CpiContext::new(
+            ctx.accounts.associated_token_program.to_account_info(),
+            Create {
+                payer: ctx.accounts.signer.to_account_info(),
+                associated_token: collector_account.clone(),
+                authority: ctx.accounts.fee_collector.to_account_info(),
+                mint: ctx.accounts.mint.to_account_info(),
+                system_program: ctx.accounts.system_program.to_account_info(),
+                token_program: ctx.accounts.token_program.to_account_info(),
+            },
+        ))?;
+    }
+    let deliverable = fee == 0
+        || (collector_account.owner == &token::ID
+            && TokenAccount::try_deserialize(&mut collector_account.try_borrow_data()?.as_ref())
+                .map(|account| {
+                    account.mint == ctx.accounts.mint.key()
+                        && account.owner == ctx.accounts.fee_collector.key()
+                        && !account.is_frozen()
+                })
+                .unwrap_or(false));
     let (net, fee_paid) = if deliverable { (net, fee) } else { (amount, 0) };
 
     let merchant_key = ctx.accounts.merchant.key();

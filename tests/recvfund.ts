@@ -9,6 +9,7 @@ import {
 } from "@solana/web3.js";
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
+  AuthorityType,
   TOKEN_PROGRAM_ID,
   createMint,
   freezeAccount,
@@ -16,6 +17,7 @@ import {
   getAssociatedTokenAddressSync,
   getOrCreateAssociatedTokenAccount,
   mintTo,
+  setAuthority,
 } from "@solana/spl-token";
 import { assert, expect } from "chai";
 import { createHash } from "crypto";
@@ -141,6 +143,17 @@ describe("recvfund", () => {
   const authorityOnly = (signer: PublicKey = authority.publicKey) => ({
     authority: signer,
     config: configPda,
+  });
+
+  const [programData] = PublicKey.findProgramAddressSync(
+    [program.programId.toBuffer()],
+    new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111")
+  );
+  const initializeAccounts = (signer: PublicKey = authority.publicKey) => ({
+    ...authorityOnly(signer),
+    program: program.programId,
+    programData,
+    systemProgram: SystemProgram.programId,
   });
 
   const registerAccounts = (m: TestMerchant, admin = m.admin.publicKey) => ({
@@ -285,27 +298,57 @@ describe("recvfund", () => {
   });
 
   describe("config", () => {
+    it("rejects an outsider claiming config before the upgrade authority", async () => {
+      await expectFailure(
+        program.methods
+          .initializeConfig(outsider.publicKey, MAX_FEE_BPS)
+          .accountsStrict(initializeAccounts(outsider.publicKey))
+          .signers([outsider])
+          .rpc(),
+        "Unauthorized"
+      );
+      expect(await connection.getAccountInfo(configPda)).to.equal(null);
+    });
+
     it("rejects initialization with a fee above the cap", async () => {
       await expectFailure(
         program.methods
           .initializeConfig(collectorA.publicKey, MAX_FEE_BPS + 1)
-          .accountsStrict({
-            ...authorityOnly(),
-            systemProgram: SystemProgram.programId,
-          })
+          .accountsStrict(initializeAccounts())
           .rpc(),
         "FeeTooHigh"
       );
+    });
+
+    it("rejects a substitute executable or ProgramData account", async () => {
+      await expectFailure(
+        program.methods
+          .initializeConfig(collectorA.publicKey, FEE_BPS_A)
+          .accountsStrict({
+            ...initializeAccounts(),
+            program: SystemProgram.programId,
+          })
+          .rpc(),
+        "InvalidProgramId"
+      );
+      await expectFailure(
+        program.methods
+          .initializeConfig(collectorA.publicKey, FEE_BPS_A)
+          .accountsStrict({
+            ...initializeAccounts(),
+            programData: outsider.publicKey,
+          })
+          .rpc(),
+        "AccountOwnedByWrongProgram"
+      );
+      expect(await connection.getAccountInfo(configPda)).to.equal(null);
     });
 
     it("rejects initialization with the default pubkey as fee collector", async () => {
       await expectFailure(
         program.methods
           .initializeConfig(PublicKey.default, FEE_BPS_A)
-          .accountsStrict({
-            ...authorityOnly(),
-            systemProgram: SystemProgram.programId,
-          })
+          .accountsStrict(initializeAccounts())
           .rpc(),
         "InvalidFeeCollector"
       );
@@ -314,10 +357,7 @@ describe("recvfund", () => {
     it("initializes with the signer as authority and emits FeeTermsUpdated", async () => {
       const sig = await program.methods
         .initializeConfig(collectorA.publicKey, FEE_BPS_A)
-        .accountsStrict({
-          ...authorityOnly(),
-          systemProgram: SystemProgram.programId,
-        })
+        .accountsStrict(initializeAccounts())
         .rpc();
       const cfg = await program.account.globalConfig.fetch(configPda);
       expect(cfg.authority.equals(authority.publicKey)).to.be.true;
@@ -334,10 +374,7 @@ describe("recvfund", () => {
       await expectFailure(
         program.methods
           .initializeConfig(outsider.publicKey, 0)
-          .accountsStrict({
-            ...authorityOnly(),
-            systemProgram: SystemProgram.programId,
-          })
+          .accountsStrict(initializeAccounts())
           .rpc(),
         "already in use"
       );
@@ -659,7 +696,7 @@ describe("recvfund", () => {
           .accountsStrict(accounts)
           .signers([m1.sweeper])
           .rpc(),
-        "ConstraintTokenOwner"
+        "ConstraintAddress"
       );
       expect(await tokenBalance(ata(depositPda(m1, customerRef)))).to.equal(
         deposited
@@ -1220,6 +1257,36 @@ describe("recvfund", () => {
       expect(redirected.data.mint.equals(freezableMint)).to.be.true;
       const [swept] = await eventsOf(sig, "depositSwept");
       expect(swept.data.fee.toString()).to.equal("0");
+    });
+
+    it("redirects fees when the collector changes its ATA authority", async () => {
+      const ref = id32("collector-ata-owner-change");
+      const amount = 1_000_000n;
+      await depositTokens(m4, ref, amount);
+      const collectorAccount = await getOrCreateAssociatedTokenAccount(
+        connection,
+        authority,
+        mint,
+        emptyCollector.publicKey
+      );
+      await setAuthority(
+        connection,
+        authority,
+        collectorAccount.address,
+        emptyCollector,
+        AuthorityType.AccountOwner,
+        outsider.publicKey
+      );
+      const before = await tokenBalance(ata(m4.settlement.publicKey));
+      const sig = await sweepToken(m4, ref, emptyCollector.publicKey);
+      expect(await tokenBalance(ata(m4.settlement.publicKey))).to.equal(
+        before + amount
+      );
+      expect(await tokenBalance(collectorAccount.address)).to.equal(0n);
+      expect(await tokenBalance(ata(depositPda(m4, ref)))).to.equal(0n);
+      const [swept] = await eventsOf(sig, "depositSwept");
+      expect(swept.data.fee.toString()).to.equal("0");
+      expect(await eventsOf(sig, "feeRedirected")).to.have.length(1);
     });
   });
 });

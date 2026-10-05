@@ -7,10 +7,14 @@ address that belongs to the merchant, and the program moves a deposit only
 to the merchant's settlement wallet and to the fee collector recorded in that
 merchant's account, taking the fee at that point.
 
+See [SECURITY.md](SECURITY.md) for threat assumptions, verification commands,
+the 2026-10-05 fixes, and release blockers. The deployed devnet program below
+has **not** been upgraded to the candidate fixes in this source tree.
+
 - Program name: `recvfund`
 - Program ID: `FAZUvvc2anrhgkP6sVczAHp2wkFCfhzpFcbiBt1mVM8J`
-- Framework: Anchor 0.31.1, SPL Token via `anchor-spl` (Token-2022 is not supported)
-- IDL: `target/idl/recvfund.json` (after `anchor build`); TypeScript types in `target/types/recvfund.ts`
+- Framework: Anchor CLI/JS 0.31.1, locked Rust crates 0.31.2, SPL Token via `anchor-spl` (Token-2022 is not supported)
+- IDL: `target/idl/recvfund.json` (after `bash scripts/build.sh`); TypeScript types in `target/types/recvfund.ts`
 
 The previous program ID `G9u3a8P6T5RFsgQhjVC5Yw7oAUqURst5MQJi1rFVkzAt` used
 a different account layout and had a `pay` instruction. Its devnet deployment
@@ -91,7 +95,7 @@ exposes them, their accounts and events in camelCase.
 
 | Instruction                                  | Accounts                                                     | Notes |
 | -------------------------------------------- | ------------------------------------------------------------ | ----- |
-| `initialize_config(fee_collector, fee_bps)`  | `authority` (signer, mut), `config` (init), `system_program` | Once. Signer becomes `authority`. `fee_bps <= 200`, `fee_collector` not the zero pubkey. Emits `FeeTermsUpdated`. |
+| `initialize_config(fee_collector, fee_bps)`  | `authority` (signer, mut), `program` (this executable), `program_data` (its loader-owned ProgramData), `config` (init), `system_program` | Once. Signer must be the executable's current upgrade authority and becomes fee `authority`. The program/ProgramData relationship is validated. `fee_bps <= 200`, `fee_collector` not the zero pubkey. Emits `FeeTermsUpdated`. Initialize before revoking upgrade authority. |
 | `set_fee_terms(fee_collector, fee_bps)`      | `authority` (signer), `config` (mut)                         | Same validation. Applies only to merchants registered afterwards. Emits `FeeTermsUpdated`. |
 | `transfer_authority(new_authority)`          | `authority` (signer), `config` (mut)                         | Single step; the new key is not validated. |
 
@@ -120,13 +124,15 @@ No instruction changes a merchant's `fee_collector` or `fee_bps`.
 | `settlement_wallet`           | `address = merchant.settlement_wallet` |
 | `settlement_token_account`    | init_if_needed, ATA of (`settlement_wallet`, `mint`) |
 | `fee_collector`               | `address = merchant.fee_collector` |
-| `fee_collector_token_account` | init_if_needed, ATA of (`fee_collector`, `mint`) |
+| `fee_collector_token_account` | mut, exact canonical ATA address of (`fee_collector`, `mint`); created when absent and a nonzero fee is owed; existing token state validated in the handler |
 | `token_program`, `associated_token_program`, `system_program` | |
 
 Moves the entire balance, then closes the deposit ATA. A later deposit
 recreates the ATA at the same address. Rejects an empty balance
-(`NothingToSweep`). If the fee collector's token account is frozen, the fee
-goes to the settlement token account instead and `FeeRedirected` is emitted.
+(`NothingToSweep`). If the canonical collector token account is frozen,
+reassigned, or malformed, the fee goes to the settlement token account instead
+and `FeeRedirected` is emitted. An arbitrary replacement account still fails
+address validation. Zero-fee sweeps do not create a collector ATA.
 Emits `DepositSwept { merchant_id, customer_ref, mint, amount, fee }`, where
 `fee` is what the collector received (0 when redirected).
 
@@ -250,13 +256,20 @@ ships platform-tools with rustc 1.79), `anchor-cli` 0.31.1, Node >= 20, Yarn 1.
 
 ```sh
 yarn install
-anchor build                       # target/deploy/recvfund.so, target/idl, target/types
-anchor test                        # local validator, runs tests/recvfund.ts
+bash scripts/build.sh              # target/deploy/recvfund.so, target/idl, target/types
+anchor test --skip-build           # local validator, runs tests/recvfund.ts
 cargo test -p recvfund --lib fee   # fee math unit tests
 yarn lint                          # prettier check of the tests
 ```
 
-`cargo check` and `anchor build` print no warnings. Two entries in
+`scripts/build.sh` uses `cargo build-sbf` and the official locked
+`anchor-lang-idl` 0.1.4 builder for source-generated IDL. Anchor CLI 0.31.1's
+bundled IDL builder injects `procmacro2_semver_exempt`, which breaks account-seed
+parsing under the tested Rust 1.85/1.90 hosts. The small `tools/idl-build` host
+binary calls the official builder without that obsolete flag; it is not part
+of the deployed program. Run `anchor test --skip-build` after this script.
+
+The following lint accommodations apply to the on-chain program. Two entries in
 `programs/recvfund/Cargo.toml` exist for code that Anchor generates, not for
 this crate's source. Neither changes the compiled program (the binary hash was
 compared before and after):
@@ -273,14 +286,14 @@ compared before and after):
 `Cargo.lock` is committed and pins a handful of transitive crates (`blake3`,
 `indexmap`, `proc-macro-crate`, `zeroize`, ...) to versions that compile
 with rustc 1.79. Do not run a blanket `cargo update`; if you add a dependency,
-check that `anchor build` still succeeds.
+check that `bash scripts/build.sh` and the validator suite still succeed.
 
 `anchor test` reads the wallet path from `Anchor.toml`
 (`~/.config/solana/id.json` by default). To use a throwaway keypair:
 
 ```sh
 solana-keygen new -o /tmp/recv-test-wallet.json --no-bip39-passphrase --force
-anchor test --provider.wallet /tmp/recv-test-wallet.json
+anchor test --skip-build --provider.wallet /tmp/recv-test-wallet.json
 ```
 
 The program keypair in `target/deploy/recvfund-keypair.json` determines the
@@ -323,7 +336,7 @@ The config PDA of the current program ID is
 ```sh
 solana config set --url devnet        # or mainnet-beta
 solana balance                        # rent for a ~300 KB program is about 2.2 SOL
-anchor build
+bash scripts/build.sh
 shasum -a 256 target/deploy/recvfund.so
 anchor deploy --provider.cluster devnet --provider.wallet <deployer keypair>
 ```
@@ -339,7 +352,8 @@ anchor idl init --provider.cluster devnet -f target/idl/recvfund.json FAZUvvc2an
 ### Configure after deploying
 
 `scripts/init-config.cjs` creates the config PDA once with the initial fee
-terms; the signing keypair becomes the fee authority. It reads
+terms; the signing keypair must be the program's current upgrade authority and
+becomes the fee authority. It reads
 `target/idl/recvfund.json`.
 
 ```sh
