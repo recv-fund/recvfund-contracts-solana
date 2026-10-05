@@ -11,10 +11,20 @@ DEST = ROOT / 'security/artifacts/candidate'
 IMAGE = 'solanafoundation/solana-verifiable-build@sha256:c78fd4ff5399ee5ea3e154881e8991bd8064899ca162a59cafc682da5a5bd516'
 
 
+def validate_receipt(receipt, commit, binary):
+    expected = {'sourceCommit': commit, 'image': IMAGE,
+                'sha256': hashlib.sha256(binary).hexdigest(), 'byteLength': len(binary)}
+    if receipt != expected:
+        raise ValueError('Missing or stale verified-build receipt; run scripts/verified-build.sh')
+
+
 def main():
     commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     if subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=ROOT):
         raise ValueError('Release artifacts require a clean tracked checkout')
+    receipt_path = ROOT / 'security/artifacts/verified-build-receipt.json'
+    receipt = json.loads(receipt_path.read_text()) if receipt_path.exists() else None
+    validate_receipt(receipt, commit, (ROOT / 'target/deploy/recvfund.so').read_bytes())
     DEST.mkdir(parents=True, exist_ok=True)
     files = {}
     for source in ['target/deploy/recvfund.so', 'target/idl/recvfund.json', 'target/types/recvfund.ts']:

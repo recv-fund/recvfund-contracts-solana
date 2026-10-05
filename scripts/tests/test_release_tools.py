@@ -10,6 +10,20 @@ def load(name):
     return module
 
 
+class CandidateManifestTests(unittest.TestCase):
+    def test_missing_verified_build_receipt_rejected(self):
+        manifest = load('release-manifest')
+        with self.assertRaises(ValueError):
+            manifest.validate_receipt(None, 'a' * 40, b'candidate')
+
+    def test_stale_binary_receipt_rejected(self):
+        manifest = load('release-manifest')
+        receipt = {'sourceCommit': 'a' * 40, 'image': manifest.IMAGE,
+                   'sha256': 'b' * 64, 'byteLength': 9}
+        with self.assertRaises(ValueError):
+            manifest.validate_receipt(receipt, 'a' * 40, b'candidate')
+
+
 class DependencyGateTests(unittest.TestCase):
     def test_unknown_warning_fails(self):
         gate = load('check-dependencies')
