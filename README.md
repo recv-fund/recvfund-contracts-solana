@@ -483,3 +483,11 @@ provenance/IDL together. `solana-verify verify-from-repo` can offer an on-chain
 verification-PDA write; it is intentionally absent from preparation CI. New
 programs must initialize config before upgrade-authority revocation. No
 mainnet release is authorized by the artifact workflow.
+
+Verified hosted result (2026-10-05): source `c81a3e29` passed both the
+[security workflow](https://github.com/recv-fund/recvfund-contracts-solana/actions/runs/37350033503)
+and [clean-build reproducibility workflow](https://github.com/recv-fund/recvfund-contracts-solana/actions/runs/37350046035).
+The 375008-byte candidate hash is
+`899bc7ca40f85f8f1ddf6daab799d60c1847cc5b66576b5079ca52f5b96ae3fd`.
+It is not deployed. Exact evidence and remaining gates are in the
+[security review](security/REVIEW-2026-10-05.md#hosted-acceptance-and-reproducibility-result).
