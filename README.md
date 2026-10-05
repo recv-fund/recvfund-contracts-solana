@@ -491,3 +491,7 @@ The 375008-byte candidate hash is
 `899bc7ca40f85f8f1ddf6daab799d60c1847cc5b66576b5079ca52f5b96ae3fd`.
 It is not deployed. Exact evidence and remaining gates are in the
 [security review](security/REVIEW-2026-10-05.md#hosted-acceptance-and-reproducibility-result).
+
+For the authority-holder handoff through `staging`, use
+[STAGING_UPGRADE_HANDOFF.md](docs/STAGING_UPGRADE_HANDOFF.md). It identifies the
+exact tested artifact and the coordinated on-chain/server promotion order.
