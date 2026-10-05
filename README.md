@@ -495,3 +495,6 @@ It is not deployed. Exact evidence and remaining gates are in the
 For the authority-holder handoff through `staging`, use
 [STAGING_UPGRADE_HANDOFF.md](docs/STAGING_UPGRADE_HANDOFF.md). It identifies the
 exact tested artifact and the coordinated on-chain/server promotion order.
+
+Security CI validates both `main` and `staging` pushes. Neither branch automatically
+performs an on-chain deployment; authority-holder promotion remains separate.
