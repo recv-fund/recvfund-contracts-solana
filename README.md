@@ -8,8 +8,8 @@ to the merchant's settlement wallet and to the fee collector recorded in that
 merchant's account, taking the fee at that point.
 
 See [SECURITY.md](SECURITY.md) for threat assumptions, verification commands,
-the 2026-10-05 fixes, and release blockers. The deployed devnet program below
-has **not** been upgraded to the candidate fixes in this source tree.
+the 2026-10-05 fixes, and release blockers. The devnet program below was
+upgraded to these fixes on 2026-10-06 (see "Deployments").
 
 - Program name: `recvfund`
 - Program ID: `FAZUvvc2anrhgkP6sVczAHp2wkFCfhzpFcbiBt1mVM8J`
@@ -306,16 +306,21 @@ any public upgrade; do not infer access from historical local path notes.
 
 | Cluster | Program | Status |
 |---|---|---|
-| devnet | `FAZUvvc2anrhgkP6sVczAHp2wkFCfhzpFcbiBt1mVM8J` | deployed 2026-10-03; config `5uLBoziU1on7DmPDyYPobgZhkFeWtjy91GW3HGWxFLcT`, fee 100 bps to `GStZmhS72eX1euYiwQY9MaxahBopDBLGwfTtXPge3DK`, upgrade and fee authority `58tYVJZ3DadHLW7aA4gGAWNxS1dEkm6ifseFqZ4LyTcV` |
+| devnet | `FAZUvvc2anrhgkP6sVczAHp2wkFCfhzpFcbiBt1mVM8J` | deployed 2026-10-03, upgraded 2026-10-06 to source `c81a3e29`; config `5uLBoziU1on7DmPDyYPobgZhkFeWtjy91GW3HGWxFLcT`, fee 100 bps to `GStZmhS72eX1euYiwQY9MaxahBopDBLGwfTtXPge3DK`, upgrade and fee authority `58tYVJZ3DadHLW7aA4gGAWNxS1dEkm6ifseFqZ4LyTcV` |
 | mainnet-beta | `FAZUvvc2anrhgkP6sVczAHp2wkFCfhzpFcbiBt1mVM8J` | not deployed |
 | devnet | `G9u3a8P6T5RFsgQhjVC5Yw7oAUqURst5MQJi1rFVkzAt` | **superseded**; old account layout with `pay`, do not integrate |
 
 The devnet deployment of `FAZUvvc2…` was first deployed from commit `a7c0492`
-and upgraded in place the same day to commit `8c7503a` (fee redirect). The
-deployed program holds the 312088-byte binary with SHA-256
-`a5e3df7dd16d4d0f10aed47bb9f3e23a277e213aeac241dab0c7adc1a97f5ed4`, followed by
-zero padding from a 10240-byte account extension; this is the value pinned in
-the server's `provenance.json`. It is a devnet deployment with a live upgrade
+and upgraded in place the same day to commit `8c7503a` (fee redirect, 312088
+bytes, SHA-256 `a5e3df7d…`). On 2026-10-06 the program data account was
+extended by 55440 bytes and the program upgraded (slot 507835877, transaction
+`2ckRTFwh4tXZTxhCZxZCwMkVYxXCTHGc3RRLMshkpm1nawM4TqWyFFhcLucs4g16sjtZhe5N9SNQ5UgBWLqTFF9h`)
+to the reproducible security build of commit `c81a3e29`: 375008 bytes, SHA-256
+`899bc7ca40f85f8f1ddf6daab799d60c1847cc5b66576b5079ca52f5b96ae3fd`, from the
+[prepared candidate](https://github.com/recv-fund/recvfund-contracts-solana/actions/runs/37350046035).
+A dump of the deployed program equals that build byte for byte with zero
+padding after it; the config and existing merchant account data were unchanged.
+This is the value pinned in the server's `provenance.json`. It is a devnet deployment with a live upgrade
 authority, so it is provisional. The fee collector was funded with 0.002 SOL
 so it is rent exempt.
 
