@@ -2,8 +2,12 @@
 
 This program has not received an independent audit recorded in this repository.
 Automated checks do not establish that a contract is safe against all attacks.
-The 2026-10-05 source fixes are local release candidates; the documented public
-devnet deployment has not been upgraded and still carries the old bytecode.
+The 2026-10-05 fixes were deployed to devnet by the authority operator on
+2026-10-06. Independent read-only inspection confirmed the deployed bytes equal
+the reproducible `c81a3e29` build (375008 bytes, SHA-256
+`899bc7ca40f85f8f1ddf6daab799d60c1847cc5b66576b5079ca52f5b96ae3fd`).
+The upgrade authority remains live; this is provisional devnet protection, not
+mainnet or funded application acceptance. See the [current verification record](security/REVIEW-2026-10-06.md).
 
 ## Confirmed and corrected root causes
 

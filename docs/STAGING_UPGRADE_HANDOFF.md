@@ -1,11 +1,13 @@
-# Solana staging upgrade handoff — 2026-10-05
+# Solana staging upgrade handoff — updated 2026-10-06
 
-The upgrade authority is on another developer's local machine. The requested
-handoff is source on `staging`; CI never signs or upgrades a public program.
-The live demo application was updated to 0.1.16, but the Solana program remains
-on its previous binary. Deploying a server image does not apply these fixes.
+The authority-holder upgrade described below has completed on devnet. A fresh
+read-only inspection on 2026-10-06 independently matched the deployed program
+to the exact reviewed build, at slot 507835877. Server `origin/main` at
+`10628c8` pins the same source, binary hash/length and matching IDL. CI never
+signs or upgrades a public program. This follow-up used no key or transaction.
+See the [verification record](../security/REVIEW-2026-10-06.md).
 
-## Reviewed candidate
+## Reviewed build now deployed on devnet
 
 - Public devnet program: `FAZUvvc2anrhgkP6sVczAHp2wkFCfhzpFcbiBt1mVM8J`.
 - Last inspected upgrade authority: `58tYVJZ3DadHLW7aA4gGAWNxS1dEkm6ifseFqZ4LyTcV`.
@@ -22,10 +24,11 @@ identical binaries. Three reviewed dependency warnings remain documented in
 `security/REVIEW-2026-10-05.md`; this is not an independent audit.
 
 The fixes prevent unauthorized first configuration and collector ATA authority
-changes from blocking token sweeps. Existing devnet initialization avoids the
-first-initializer window; the old collector denial remains until upgrade.
+changes from blocking token sweeps. The current devnet binary includes
+both corrections. Public authority custody and funded application acceptance
+remain separate checks.
 
-## Developer execution order
+## Promotion procedure for future upgrades
 
 1. Fetch `staging`; inspect the review and original candidate manifest. Download
    the prepared artifact from the run above and verify its binary and IDL hashes.
@@ -61,6 +64,9 @@ authority or account-layout check differs, stop promotion and investigate.
 
 ## Open gates
 
-Authority-holder upgrade, deployed-byte proof, server provenance promotion and
-funded devnet end-to-end acceptance are pending. Mainnet deployment requires its
-own independent audit, authority/key governance and explicit release decision.
+Deployed-byte proof and server source provenance promotion are verified for the
+current devnet build. Funded devnet end-to-end acceptance on the installed
+application remains unverified by this contract review. Authority custody was
+not exercised here; the live public upgrade authority remains
+`58tYVJZ3DadHLW7aA4gGAWNxS1dEkm6ifseFqZ4LyTcV`. Mainnet requires an independent
+audit, authority/key governance and its own explicit release decision.

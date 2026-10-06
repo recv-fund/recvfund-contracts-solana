@@ -494,7 +494,10 @@ Verified hosted result (2026-10-05): source `c81a3e29` passed both the
 and [clean-build reproducibility workflow](https://github.com/recv-fund/recvfund-contracts-solana/actions/runs/37350046035).
 The 375008-byte candidate hash is
 `899bc7ca40f85f8f1ddf6daab799d60c1847cc5b66576b5079ca52f5b96ae3fd`.
-It is not deployed. Exact evidence and remaining gates are in the
+An independent 2026-10-06 read-only check confirmed that devnet now runs these
+exact bytes at deployment slot 507835877. The original build manifest remains
+a historical candidate record; current deployment evidence is in the
+[2026-10-06 verification](security/REVIEW-2026-10-06.md). Build evidence is in the
 [security review](security/REVIEW-2026-10-05.md#hosted-acceptance-and-reproducibility-result).
 
 For the authority-holder handoff through `staging`, use
