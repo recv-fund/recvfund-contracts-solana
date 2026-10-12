@@ -6,9 +6,12 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+# A newer commit on a pull request replaces the older run. Runs for pushes to
+# main and staging always finish, so a commit that reaches both branches never
+# carries a cancelled check.
 concurrency:
   group: solana-security-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   verify:
     runs-on: ubuntu-24.04
